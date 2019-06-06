@@ -24,7 +24,6 @@ def serialize_cupy_ndarray(x):
     # used in the ucx comms for gpu/cpu message passing
     # 'lengths' set by dask
     header = x.__cuda_array_interface__.copy()
-    header["is_cuda"] = 1
     header["dtype"] = dtype
     return header, [data]
 

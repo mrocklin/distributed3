@@ -10,7 +10,7 @@ from distributed.comm.registry import backends, get_backend
 from distributed.comm import ucx, parse_address
 from distributed.protocol import to_serialize
 from distributed.deploy.local import LocalCluster
-from distributed.utils_test import gen_test, loop, inc  # noqa: 401
+from distributed.utils_test import gen_cluster, gen_test, loop, inc  # noqa: 401
 
 from .test_comms import check_deserialize
 
@@ -294,3 +294,20 @@ def test_tcp_localcluster(loop):
         #     assert any(w.data == {x.key: 2} for w in c.workers)
         #     assert e.loop is c.loop
         #     print(c.scheduler.workers)
+
+
+@pytest.mark.asyncio
+async def test_cudf_join():
+    from dask.distributed import Scheduler, Worker
+    import dask
+
+    cudf = pytest.importorskip("cudf")
+    async with Scheduler(protocol="ucx", port=0, interface="ib0") as s:
+        async with Worker(s.address, port=0) as a, Worker(s.address, port=0) as b:
+            async with Client(s.address, asynchronous=True) as c:
+                df = dask.datasets.timeseries(
+                    dtypes={"x": int, "y": float}, freq="1s"
+                ).partitions[:2]
+                df = df.map_partitions(cudf.from_pandas)
+                await c.compute(df.x.sum())
+                await c.compute(df[["x"]].sum())
