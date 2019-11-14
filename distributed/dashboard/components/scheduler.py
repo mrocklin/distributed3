@@ -1,3 +1,4 @@
+import datetime
 import logging
 import math
 from numbers import Number
@@ -859,8 +860,9 @@ class Events(DashboardComponent):
 
 
 class TaskStream(DashboardComponent):
-    def __init__(self, scheduler, n_rectangles=1000, clear_interval="20s", **kwargs):
+    def __init__(self, scheduler, n_rectangles=1000, clear_interval="20s", clear_multipler=3, **kwargs):
         self.scheduler = scheduler
+        self.last_check = datetime.datetime(2000, 1, 1)
         self.offset = 0
         es = [p for p in self.scheduler.plugins if isinstance(p, TaskStreamPlugin)]
         if not es:
@@ -871,6 +873,7 @@ class TaskStream(DashboardComponent):
         self.workers = dict()
         self.n_rectangles = n_rectangles
         clear_interval = parse_timedelta(clear_interval, default="ms")
+        self.clear_multiplier = clear_multipler
         self.clear_interval = clear_interval
         self.last = 0
 
@@ -904,9 +907,23 @@ class TaskStream(DashboardComponent):
             if first_end > self.last:
                 last = self.last
                 self.last = first_end
-                if first_end > last + self.clear_interval * 1000:
-                    self.offset = min(rectangles["start"])
-                    self.source.data.update({k: [] for k in rectangles})
+
+                # gap to previous is larger than clear_multiplier * average of currently visualized
+                # and greater than 10s
+                if len(self.source.data["start"]) > 2:
+                    gap_to_previous = self.source.data["start"][-1] - self.source.data["start"][-2] + self.source.data["duration"][-2]
+                else:
+                    gap_to_previous = 0
+
+                # only check every 5 seconds if a refresh should be considered
+                if (datetime.datetime.now() - self.last_check).total_seconds() > 5:
+                    self.last_check = datetime.datetime.now()
+                    avg_duration_of_visualized = np.mean(self.source.data["duration"])
+
+                    # only refresh when there's a long gap
+                    if (gap_to_previous > (avg_duration_of_visualized * self.clear_multiplier) > self.clear_interval*1000) or last == 0:
+                        self.offset = min(rectangles["start"])
+                        self.source.data.update({k: [] for k in rectangles})
 
             rectangles["start"] = [x - self.offset for x in rectangles["start"]]
 
