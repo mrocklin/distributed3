@@ -133,8 +133,8 @@ async def test_release_dep_called(c, s, w):
     expected_notifications = [
         {"key": "dep", "start": "waiting", "finish": "ready"},
         {"key": "dep", "start": "ready", "finish": "executing"},
+        {"key": "task", "start": "speculative", "finish": "ready"},
         {"key": "dep", "start": "executing", "finish": "memory"},
-        {"key": "task", "start": "waiting", "finish": "ready"},
         {"key": "task", "start": "ready", "finish": "executing"},
         {"key": "task", "start": "executing", "finish": "memory"},
         {"key": "dep", "state": "memory"},

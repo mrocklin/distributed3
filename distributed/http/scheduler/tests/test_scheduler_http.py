@@ -126,7 +126,15 @@ async def test_prometheus_collect_task_states(c, s, a, b):
         ]
         return active_metrics, forgotten_tasks
 
-    expected = {"memory", "released", "processing", "waiting", "no-worker", "erred"}
+    expected = {
+        "memory",
+        "released",
+        "processing",
+        "waiting",
+        "no-worker",
+        "erred",
+        "speculative",
+    }
 
     # Ensure that we get full zero metrics for all states even though the
     # scheduler did nothing, yet

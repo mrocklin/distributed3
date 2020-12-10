@@ -128,7 +128,15 @@ DEFAULT_EXTENSIONS = [
     EventExtension,
 ]
 
-ALL_TASK_STATES = {"released", "waiting", "no-worker", "processing", "erred", "memory"}
+ALL_TASK_STATES = {
+    "released",
+    "waiting",
+    "no-worker",
+    "processing",
+    "erred",
+    "memory",
+    "speculative",
+}
 
 
 @cclass
@@ -1401,6 +1409,34 @@ class _StateLegacySet(Set):
         return "%s(%s)" % (self.__class__, set(self))
 
 
+def _recommend_speculative_assignment(ts):
+    """
+    Recommend speculative assignment for dependent (child) task IFF:
+
+    - Current task only has a single dependent task
+    - All dependencies of that child task are present / processing on the same worker
+
+    This function is called from two transition functions:
+      - transition_waiting_processing
+      - transition_waiting_speculative
+
+    As each task passes through either of these (nearly every task goes through
+    waiting -> processing), this function returns a recommendation (or no
+    recommendation) for how to process the dependent task.
+
+    """
+
+    if (
+        len(ts.dependents) == 1
+        and len({dts.processing_on for dts in list(ts.dependents)[0].dependencies}) == 1
+        and not ts.actor
+    ):
+        return {list(ts.dependents)[0].key: "speculative"}
+
+    else:
+        return {}
+
+
 def _legacy_task_key_set(tasks):
     """
     Transform a set of task states into a set of task keys.
@@ -1808,9 +1844,13 @@ class Scheduler(ServerNode):
 
         self._transitions = {
             ("released", "waiting"): self.transition_released_waiting,
+            ("released", "speculative"): self.transition_waiting_speculative,
             ("waiting", "released"): self.transition_waiting_released,
             ("waiting", "processing"): self.transition_waiting_processing,
             ("waiting", "memory"): self.transition_waiting_memory,
+            ("waiting", "speculative"): self.transition_waiting_speculative,
+            ("speculative", "processing"): self.transition_speculative_processing,
+            ("speculative", "released"): self.transition_speculative_released,
             ("processing", "released"): self.transition_processing_released,
             ("processing", "memory"): self.transition_processing_memory,
             ("processing", "erred"): self.transition_processing_erred,
@@ -2956,6 +2996,12 @@ class Scheduler(ServerNode):
             assert (not not dts._who_has) != (dts in ts._waiting_on)
             assert ts in dts._waiters  # XXX even if dts._who_has?
 
+    def validate_speculative(self, key):
+        ts = self.tasks[key]
+        assert len({dts.processing_on for dts in ts.waiting_on}) == 1
+        ws = ts.processing_on
+        assert ws
+
     def validate_processing(self, key):
         ts: TaskState = self.tasks[key]
         dts: TaskState
@@ -3210,14 +3256,20 @@ class Scheduler(ServerNode):
                 msg["resource_restrictions"] = ts._resource_restrictions
             if ts._actor:
                 msg["actor"] = True
+            if ts.state == "speculative":
+                msg["speculative"] = True
 
             deps: set = ts._dependencies
-            if deps:
+            if deps and not ts.state == "speculative":
                 msg["who_has"] = {
                     dts._key: [ws._address for ws in dts._who_has] for dts in deps
                 }
                 msg["nbytes"] = {dts._key: dts._nbytes for dts in deps}
-
+                if self.validate:
+                    assert all(msg["who_has"].values())
+            elif ts.state == "speculative":
+                msg["who_has"] = {dts._key: dts._processing_on.address for dts in deps}
+                msg["nbytes"] = {dts._key: dts._nbytes for dts in deps}
                 if self.validate:
                     assert all(msg["who_has"].values())
 
@@ -4388,11 +4440,13 @@ class Scheduler(ServerNode):
         Get the estimated communication cost (in s.) to compute the task
         on the given worker.
         """
+        # TODO: How is it possible for nbytes to be None when there's a getter that is supposed to
+        # stop that from happening?
         dts: TaskState
         deps: set = ts._dependencies - ws._has_what
         nbytes: Py_ssize_t = 0
         for dts in deps:
-            nbytes += dts._nbytes
+            nbytes += dts._nbytes or DEFAULT_DATA_SIZE
         return nbytes / self.bandwidth
 
     def get_task_duration(self, ts: TaskState, default=None):
@@ -4705,6 +4759,98 @@ class Scheduler(ServerNode):
 
         return ws
 
+    def transition_waiting_speculative(self, key):
+        try:
+
+            ts = self.tasks[key]
+
+            if self.validate:
+                # All dependencies are on the same worker
+                assert len({dts.processing_on for dts in ts.dependencies}) == 1
+
+            ws = list(ts.dependencies)[0].processing_on
+
+            duration = self.get_task_duration(ts)
+
+            # There are no comm costs if this is speculative
+            ws.processing[ts] = duration
+            ts.processing_on = ws
+            ws.occupancy += duration
+            self.total_occupancy += duration
+            ts.state = "speculative"
+            self.consume_resources(ts, ws)
+            self.check_idle_saturated(ws)
+            self.n_tasks += 1
+
+            for dts in ts.dependencies:
+                ts.waiting_on.add(dts)
+                dts.waiters.add(ts)
+
+            self.send_task_to_worker(ws.address, ts)
+
+            return _recommend_speculative_assignment(ts)
+
+            return {}
+        except Exception as e:
+            logger.exception(e)
+            if LOG_PDB:
+                import pdb
+
+                pdb.set_trace()
+            raise
+
+    def transition_speculative_processing(self, key):
+        try:
+            ts = self.tasks[key]
+
+            if self.validate:
+                assert ts.state == "speculative"
+                assert not ts.waiting_on
+
+            ts.state = "processing"
+
+            return {}
+
+        except Exception as e:
+            logger.exception(e)
+            if LOG_PDB:
+                import pdb
+
+                pdb.set_trace()
+            raise
+
+    def transition_speculative_released(self, key):
+        try:
+            ts = self.tasks[key]
+
+            if self.validate:
+                assert ts.state == "speculative"
+                assert ts.processing_on
+
+            ts.waiters.clear()
+            ts.waiting_on.clear()
+
+            self._remove_from_processing(
+                ts, send_worker_msg={"op": "release-task", "key": key}
+            )
+            ts.state = "released"
+
+            recommendations = {}
+
+            for dts in ts.dependents:
+                if dts.state in ("erred", "speculative"):
+                    recommendations[dts.key] = "released"
+
+            return recommendations
+
+        except Exception as e:
+            logger.exception(e)
+            if LOG_PDB:
+                import pdb
+
+                pdb.set_trace()
+            raise
+
     def transition_waiting_processing(self, key):
         try:
             ts: TaskState = self.tasks[key]
@@ -4744,7 +4890,8 @@ class Scheduler(ServerNode):
 
             self.send_task_to_worker(worker, ts, duration)
 
-            return {}
+            return _recommend_speculative_assignment(ts)
+
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -6185,7 +6332,7 @@ def validate_task_state(ts: TaskState):
         assert dts.state != "forgotten"
 
     for dts in ts._waiters:
-        assert dts.state in ("waiting", "processing"), (
+        assert dts.state in ("waiting", "processing", "speculative"), (
             "waiter not in play",
             str(ts),
             str(dts),
@@ -6199,11 +6346,16 @@ def validate_task_state(ts: TaskState):
         )
         assert dts.state != "forgotten"
 
-    assert (ts._processing_on is not None) == (ts.state == "processing")
+    assert (ts._processing_on is not None) == (
+        ts.state in ("processing", "speculative")
+    )
     assert bool(ts._who_has) == (ts.state == "memory"), (ts, ts._who_has)
 
     if ts.state == "processing":
-        assert all([dts._who_has for dts in ts._dependencies]), (
+        assert (
+            all(dts._who_has for dts in ts._dependencies)
+            or len({dts._processing_on for dts in ts._dependencies}) == 1
+        ), (
             "task processing without all deps",
             str(ts),
             str(ts._dependencies),

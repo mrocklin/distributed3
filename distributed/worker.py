@@ -78,7 +78,7 @@ LOG_PDB = dask.config.get("distributed.admin.pdb-on-err")
 no_value = "--no-value-sentinel--"
 
 IN_PLAY = ("waiting", "ready", "executing", "long-running")
-PENDING = ("waiting", "ready", "constrained")
+PENDING = ("speculative", "waiting", "ready", "constrained")
 PROCESSING = ("waiting", "ready", "constrained", "executing", "long-running")
 READY = ("ready", "constrained")
 
@@ -461,6 +461,7 @@ class Worker(ServerNode):
             ("flight", "memory"): self.transition_flight_memory,
             ("flight", "ready"): self.transition_flight_memory,
             ("flight", "waiting"): self.transition_flight_waiting,
+            ("speculative", "ready"): self.transition_speculative_ready,
         }
 
         self.incoming_transfer_log = deque(maxlen=100000)
@@ -1441,6 +1442,7 @@ class Worker(ServerNode):
         duration=None,
         resource_restrictions=None,
         actor=False,
+        speculative=False,
         **kwargs2,
     ):
         try:
@@ -1465,7 +1467,7 @@ class Worker(ServerNode):
                 self.tasks[key] = ts = TaskState(
                     key=key, runspec=SerializedTask(function, args, kwargs, task)
                 )
-                ts.state = "waiting"
+                ts.state = "waiting" if not speculative else "speculative"
 
             if priority is not None:
                 priority = tuple(priority) + (self.generation,)
@@ -1481,16 +1483,16 @@ class Worker(ServerNode):
 
             who_has = who_has or {}
 
-            for dependency, workers in who_has.items():
+            for dependency_key, workers in who_has.items():
                 assert workers
-                if dependency not in self.tasks:
-                    self.tasks[dependency] = dep_ts = TaskState(key=dependency)
+                if dependency_key not in self.tasks:
+                    self.tasks[dependency_key] = dep_ts = TaskState(key=dependency_key)
                     dep_ts.state = (
-                        "waiting" if dependency not in self.data else "memory"
+                        "waiting" if dependency_key not in self.data else "memory"
                     )
 
-                dep_ts = self.tasks[dependency]
-                self.log.append((dependency, "new-dep", dep_ts.state))
+                dep_ts = self.tasks[dependency_key]
+                self.log.append((dependency_key, "new-dep", dep_ts.state))
 
                 if dep_ts.state != "memory":
                     ts.waiting_for_data.add(dep_ts.key)
@@ -1508,7 +1510,8 @@ class Worker(ServerNode):
 
             if nbytes is not None:
                 for key, value in nbytes.items():
-                    self.tasks[key].nbytes = value
+                    # TODO: sometimes `value` is `None`, which is probably due to being mis-set somewhere else
+                    self.tasks[key].nbytes = value or DEFAULT_DATA_SIZE
 
             if ts.waiting_for_data:
                 self.data_needed.append(ts.key)
@@ -1542,6 +1545,24 @@ class Worker(ServerNode):
         if self.validate:
             self.validate_task(ts)
         self._notify_plugins("transition", ts.key, start, state or finish, **kwargs)
+
+    def transition_speculative_ready(self, ts):
+        try:
+            if self.validate:
+                assert ts.state == "speculative"
+                assert all(dep.key in self.data for dep in ts.dependencies)
+                assert not ts.waiting_for_data
+
+            # TODO add constrained condition
+            heapq.heappush(self.ready, (ts.priority, ts.key))
+
+        except Exception as e:
+            logger.exception(e)
+            if LOG_PDB:
+                import pdb
+
+                pdb.set_trace()
+            raise
 
     def transition_waiting_flight(self, ts, worker=None):
         try:
@@ -2945,11 +2966,16 @@ class Worker(ServerNode):
                     assert dep.state is not None
                     assert ts in dep.dependents
                 for key in ts.waiting_for_data:
+                    # these are tasks that the current task (ts) needs in memory
+                    # before it can proceed. With speculative tasks, the ts_wait
+                    # can reasonably include tasks that are "ready" -- they will
+                    # be executed here (soon) and then the data will be
+                    # available.
                     ts_wait = self.tasks[key]
                     assert (
-                        ts_wait.state == "flight"
-                        or ts_wait.state == "waiting"
-                        or ts.wait.key in self._missing_dep_flight
+                        ts_wait.state
+                        in ("flight", "waiting", "ready", "executing", "speculative")
+                        or ts_wait.key in self._missing_dep_flight
                         or ts_wait.who_has.issubset(self.in_flight_workers)
                     )
                 if ts.state == "memory":

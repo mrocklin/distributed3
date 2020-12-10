@@ -312,7 +312,14 @@ class GroupProgress(SchedulerPlugin):
     def create(self, key, k):
         with log_errors():
             ts = self.scheduler.tasks[key]
-            g = {"memory": 0, "erred": 0, "waiting": 0, "released": 0, "processing": 0}
+            g = {
+                "memory": 0,
+                "erred": 0,
+                "waiting": 0,
+                "released": 0,
+                "processing": 0,
+                "speculative": 0,
+            }
             self.keys[k] = set()
             self.groups[k] = g
             self.nbytes[k] = 0
