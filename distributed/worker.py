@@ -1423,17 +1423,17 @@ class Worker(ServerNode):
     ###################
 
     def update_data(self, comm=None, data=None, report=True, serializers=None):
+        recommendations = {}
         for key, value in data.items():
             ts = self.tasks.get(key)
-            if getattr(ts, "state", None) is not None:
-                self.transition(ts, "memory", value=value)
-            else:
+            if ts is None:
                 self.tasks[key] = ts = TaskState(key)
-                self.put_key_in_memory(ts, value)
-                ts.priority = None
-                ts.duration = None
+                ts.state = "flight"
+            recommendations.update({ts: ("memory", {"value": value})})
 
             self.log.append((key, "receive-from-scatter"))
+
+        self.transitions(recommendations)
 
         if report:
             self.batched_stream.send({"op": "add-keys", "keys": list(data)})
@@ -1483,6 +1483,7 @@ class Worker(ServerNode):
         **kwargs2,
     ):
         try:
+            recommendations = {}
             runspec = SerializedTask(function, args, kwargs, task)
             if key in self.tasks:
                 ts = self.tasks[key]
@@ -1502,17 +1503,13 @@ class Worker(ServerNode):
                     # This is a scheduler re-assignment
                     # Either `fetch` -> `waiting` or `flight` -> `waiting`
                     self.log.append((ts.key, "re-adding key, new TaskState"))
-                    self.transition(ts, "waiting", runspec=runspec)
+                    recommendations.update({ts: ("waiting", {"runspec": runspec})})
             else:
                 self.log.append((key, "new"))
                 self.tasks[key] = ts = TaskState(
                     key=key, runspec=SerializedTask(function, args, kwargs, task)
                 )
-                self.transition(ts, "waiting")
-
-            # TODO: move transition of `ts` to end of `add_task`
-            # This will require a chained recommendation transition system like
-            # the scheduler
+                recommendations.update({ts: ("waiting", {"runspec": runspec})})
 
             if priority is not None:
                 priority = tuple(priority) + (self.generation,)
@@ -1521,7 +1518,6 @@ class Worker(ServerNode):
             if actor:
                 self.actors[ts.key] = None
 
-            ts.runspec = runspec
             ts.priority = priority
             ts.duration = duration
             if resource_restrictions:
@@ -1546,11 +1542,15 @@ class Worker(ServerNode):
 
                     # transition from new -> fetch handles adding dependency
                     # to waiting_for_data
-                    self.transition(dep_ts, state)
+                    # TODO: `state` should be "fetch" and let recommender
+                    # make it "memory" if needed
+                    recommendations.update({dep_ts: state})
+                    # self.transition(dep_ts, state)
 
-                    self.log.append(
-                        (dependency, "new-dep", dep_ts.state, f"requested by {ts.key}")
-                    )
+                    # TODO: figure out where these logs should go
+                #   self.log.append(
+                #       (dependency, "new-dep", dep_ts.state, f"requested by {ts.key}")
+                #   )
 
                 else:
                     # task was already present on worker
@@ -1576,8 +1576,9 @@ class Worker(ServerNode):
 
             if ts.waiting_for_data:
                 self.data_needed.append(ts.key)
-            else:
-                self.transition(ts, "ready")
+
+            self.transitions(recommendations)
+
             if self.validate:
                 for worker, keys in self.has_what.items():
                     for k in keys:
@@ -1596,26 +1597,52 @@ class Worker(ServerNode):
                 pdb.set_trace()
             raise
 
+    def transitions(self, recommendations):
+        tasks = set()
+        recommendations = recommendations.copy()
+        while recommendations:
+            ts, finish = recommendations.popitem()
+            tasks.add(ts)
+            if isinstance(finish, tuple):
+                finish, kwargs = finish
+            else:
+                kwargs = {}
+            self.log.append((ts.key, ts.state, finish, "recommender"))
+            new_recs = self.transition(ts, finish, **kwargs)
+            recommendations.update(new_recs)
+
+        if self.validate:
+            for ts in tasks:
+                self.validate_task(ts)
+
     def transition(self, ts, finish, **kwargs):
         if ts is None:
             return
         start = ts.state
         if start == finish:
-            return
+            return {}
         func = self._transitions[start, finish]
-        state = func(ts, **kwargs)
-        self.log.append((ts.key, start, state or finish))
-        ts.state = state or finish
-        if self.validate:
-            self.validate_task(ts)
-        self._notify_plugins("transition", ts.key, start, state or finish, **kwargs)
+        recommendations = func(ts, **kwargs)
+        self.log.append((ts.key, start, ts.state))
+        self._notify_plugins("transition", ts.key, start, ts.state, **kwargs)
+        return recommendations
 
-    def transition_new_waiting(self, ts):
+    def transition_new_waiting(self, ts, runspec=None):
         try:
             if self.validate:
                 assert ts.state == "new"
-                assert ts.runspec is not None
+                # assert ts.runspec is not None
                 assert not ts.who_has
+
+            recommendations = {}
+            ts.runspec = runspec if runspec is not None else ts.runspec
+
+            if not ts.waiting_for_data:
+                recommendations.update({ts: "ready"})
+
+            ts.state = "waiting"
+            return recommendations
+
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1626,12 +1653,21 @@ class Worker(ServerNode):
 
     def transition_new_fetch(self, ts):
         try:
+            recommendations = {}
             if self.validate:
                 assert ts.state == "new"
                 assert ts.runspec is None
 
+            if ts.key in self.data:
+                recommendations.update({ts: "memory"})
+                return recommendations
+
             for dependent in ts.dependents:
                 dependent.waiting_for_data.add(ts.key)
+
+            ts.state = "fetch"
+
+            return recommendations
 
         except Exception as e:
             logger.exception(e)
@@ -1664,6 +1700,14 @@ class Worker(ServerNode):
             # remove entry from dependents to avoid a spurious `gather_dep` call``
             for dependent in ts.dependents:
                 dependent.waiting_for_data.discard(ts.key)
+
+            recommendations = {}
+
+            if not ts.waiting_for_data:
+                recommendations.update({ts: "ready"})
+
+            ts.state = "waiting"
+            return recommendations
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1696,6 +1740,15 @@ class Worker(ServerNode):
             # remove entry from dependents to avoid a spurious `gather_dep` call``
             for dependent in ts.dependents:
                 dependent.waiting_for_data.discard(ts.key)
+
+            recommendations = {}
+
+            if not ts.waiting_for_data:
+                recommendations.update({ts: "ready"})
+
+            ts.state = "waiting"
+
+            return recommendations
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1711,7 +1764,12 @@ class Worker(ServerNode):
                 assert ts.dependents
 
             ts.coming_from = worker
+            # TODO make this a set of keys
             self.in_flight_tasks += 1
+
+            ts.state = "flight"
+
+            return {}
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1738,6 +1796,9 @@ class Worker(ServerNode):
                 if dependent.state == "waiting":
                     self.data_needed.append(dependent.key)
 
+            ts.state = "fetch"
+            return {}
+
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1751,17 +1812,25 @@ class Worker(ServerNode):
             if self.validate:
                 assert ts.state == "flight"
 
+            recommendations = {}
+
             self.in_flight_tasks -= 1
             ts.coming_from = None
-            self.put_key_in_memory(ts, value)
+
             for dependent in ts.dependents:
                 try:
                     dependent.waiting_for_data.remove(ts.key)
                     self.waiting_for_data_count -= 1
+                    if not dependent.waiting_for_data:
+                        recommendations.update({dependent: "ready"})
                 except KeyError:
                     pass
 
             self.batched_stream.send({"op": "add-keys", "keys": [ts.key]})
+
+            ts.state = "memory"
+            self.put_key_in_memory(ts, value)
+            return recommendations
 
         except Exception as e:
             logger.exception(e)
@@ -1786,10 +1855,14 @@ class Worker(ServerNode):
             self.has_what[self.address].discard(ts.key)
 
             if ts.resource_restrictions is not None:
+                # TODO: make this a transition function
                 self.constrained.append(ts.key)
-                return "constrained"
+                ts.state = "constrained"
             else:
+                ts.state = "ready"
                 heapq.heappush(self.ready, (ts.priority, ts.key))
+
+            return {}
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1807,8 +1880,12 @@ class Worker(ServerNode):
             self.waiting_for_data_count -= len(ts.waiting_for_data)
             ts.waiting_for_data.clear()
             if value is not None:
+                ts.state = "memory"
                 self.put_key_in_memory(ts, value)
+
             self.send_task_state_to_scheduler(ts)
+
+            return {}
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1831,6 +1908,9 @@ class Worker(ServerNode):
 
             self.executing_count += 1
             self.loop.add_callback(self.execute, ts.key)
+            ts.state = "executing"
+
+            return {}
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -1846,20 +1926,38 @@ class Worker(ServerNode):
         self.send_task_state_to_scheduler(ts)
 
     def transition_ready_memory(self, ts, value=None):
+        recommendations = {}
         if value:
+            ts.state = "memory"
             self.put_key_in_memory(ts, value=value)
+
+            for dependent in ts.dependents:
+                try:
+                    dependent.waiting_for_data.remove(ts.key)
+                    self.waiting_for_data_count -= 1
+                    if not dependent.waiting_for_data:
+                        recommendations.update({dependent: "ready"})
+                except KeyError:
+                    pass
         self.send_task_state_to_scheduler(ts)
+
+        return recommendations
 
     def transition_constrained_executing(self, ts):
         self.transition_ready_executing(ts)
         for resource, quantity in ts.resource_restrictions.items():
             self.available_resources[resource] -= quantity
 
+        ts.state = "executing"
+
         if self.validate:
             assert all(v >= 0 for v in self.available_resources.values())
 
+        return {}
+
     def transition_executing_done(self, ts, value=no_value, report=True):
         try:
+            recommendations = {}
             if self.validate:
                 assert ts.state == "executing" or ts.key in self.long_running
                 assert not ts.waiting_for_data
@@ -1878,6 +1976,7 @@ class Worker(ServerNode):
 
             if value is not no_value:
                 try:
+                    ts.state = "memory"
                     self.put_key_in_memory(ts, value, transition=False)
                 except Exception as e:
                     logger.info("Failed to put key in memory", exc_info=True)
@@ -1886,18 +1985,30 @@ class Worker(ServerNode):
                     ts.traceback = msg["traceback"]
                     ts.state = "error"
                     out = "error"
+                    recommendations.update({ts: "error"})
+                    # TODO: do we need a different error transition here?
+                    #
+                if ts.state == "memory":
+                    for dependent in ts.dependents:
+                        try:
+                            dependent.waiting_for_data.remove(ts.key)
+                            self.waiting_for_data_count -= 1
+                            if not dependent.waiting_for_data:
+                                recommendations.update({dependent: "ready"})
+                        except KeyError:
+                            pass
 
                 # Don't release the dependency keys, but do remove them from `dependents`
-                for dependency in ts.dependencies:
-                    dependency.dependents.discard(ts)
-                ts.dependencies.clear()
+                # for dependency in ts.dependencies:
+                #    dependency.dependents.discard(ts)
+                # ts.dependencies.clear()
 
             if report and self.batched_stream and self.status == Status.running:
                 self.send_task_state_to_scheduler(ts)
             else:
                 raise CommClosedError
 
-            return out
+            return recommendations
 
         except EnvironmentError:
             logger.info("Comm closed")
@@ -1925,6 +2036,8 @@ class Worker(ServerNode):
             )
 
             self.io_loop.add_callback(self.ensure_computing)
+            ts.state = "long-running"
+            return {}
         except Exception as e:
             logger.exception(e)
             if LOG_PDB:
@@ -2125,14 +2238,14 @@ class Worker(ServerNode):
 
         ts.type = type(value)
 
-        for dep in ts.dependents:
-            try:
-                dep.waiting_for_data.remove(ts.key)
-                self.waiting_for_data_count -= 1
-            except KeyError:
-                pass
-            if not dep.waiting_for_data:
-                self.transition(dep, "ready")
+        #        for dep in ts.dependents:
+        #            try:
+        #                dep.waiting_for_data.remove(ts.key)
+        #                self.waiting_for_data_count -= 1
+        #            except KeyError:
+        #                pass
+        #            if not dep.waiting_for_data:
+        #                self.transition(dep, "ready")
 
         self.log.append((ts.key, "put-in-memory"))
 
@@ -2177,6 +2290,7 @@ class Worker(ServerNode):
                 if self.validate:
                     self.validate_state()
 
+                recommendations = {}
                 # dep states may have changed before gather_dep runs
                 # if a dep is no longer in-flight then don't fetch it
                 deps_ts = [self.tasks.get(key, None) or TaskState(key) for key in deps]
@@ -2196,7 +2310,9 @@ class Worker(ServerNode):
                     self.log.append(("busy-gather", worker, deps))
                     for ts in deps_ts:
                         if ts.state == "flight":
-                            self.transition(ts, "fetch")
+                            recommendations.update({ts: "fetch"})
+                            # self.transition(ts, "fetch")
+                    self.transitions(recommendations)
                     return
 
                 if cause:
@@ -2274,18 +2390,22 @@ class Worker(ServerNode):
                     ts = self.tasks.get(d)
 
                     if not busy and d in data:
-                        self.transition(ts, "memory", value=data[d])
+                        recommendations.update({ts: ("memory", {"value": data[d]})})
+                        # self.transition(ts, "memory", value=data[d])
                     elif ts is None or ts.state == "executing":
                         self.release_key(d, cause="already executing at gather")
                         continue
                     elif ts.state not in ("ready", "memory"):
-                        self.transition(ts, "fetch", worker=worker)
+                        recommendations.update({ts: ("fetch", {"worker": worker})})
+                        # self.transition(ts, "fetch", worker=worker)
 
                     if not busy and d not in data and ts.dependents:
                         self.log.append(("missing-dep", d))
                         self.batched_stream.send(
                             {"op": "missing-data", "errant_worker": worker, "key": d}
                         )
+
+                self.transitions(recommendations)
 
                 if self.validate:
                     self.validate_state()
