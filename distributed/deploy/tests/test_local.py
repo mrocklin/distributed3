@@ -248,8 +248,8 @@ def test_Client_unused_kwargs_with_address(loop):
 
 
 def test_Client_twice(loop):
-    with Client(loop=loop, silence_logs=False, dashboard_address=None) as c:
-        with Client(loop=loop, silence_logs=False, dashboard_address=None) as f:
+    with Client(loop=loop, silence_logs=False, dashboard_address=":0") as c:
+        with Client(loop=loop, silence_logs=False, dashboard_address=":0") as f:
             assert c.cluster.scheduler.port != f.cluster.scheduler.port
 
 
@@ -1048,7 +1048,9 @@ async def test_no_workers(cleanup):
 
 @pytest.mark.asyncio
 async def test_cluster_names():
-    async with LocalCluster(processes=False, asynchronous=True) as unnamed_cluster:
+    async with LocalCluster(
+        processes=False, asynchronous=True, dashboard_address=":0"
+    ) as unnamed_cluster:
         async with LocalCluster(
             processes=False, asynchronous=True, name="mycluster"
         ) as named_cluster:
@@ -1070,12 +1072,15 @@ async def test_local_cluster_redundant_kwarg(nanny):
         # Extra arguments are forwarded to the worker class. Depending on
         # whether we use the nanny or not, the error treatment is quite
         # different and we should assert that an exception is raised
-        async with await LocalCluster(
-            typo_kwarg="foo", processes=nanny, n_workers=1
+        async with LocalCluster(
+            typo_kwarg="foo",
+            processes=nanny,
+            n_workers=1,
+            asynchronous=True,
         ) as cluster:
 
             # This will never work but is a reliable way to block without hard
             # coding any sleep values
-            async with Client(cluster) as c:
+            async with Client(cluster, asynchronous=True) as c:
                 f = c.submit(sleep, 0)
                 await f

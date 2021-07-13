@@ -7,6 +7,7 @@ from time import sleep
 
 import pytest
 from tornado import gen
+from tornado.ioloop import IOLoop
 
 from distributed import Client, Nanny, Scheduler, Worker, config, default_client
 from distributed.core import rpc
@@ -18,6 +19,7 @@ from distributed.utils_test import (
     gen_test,
     inc,
     new_config,
+    start_cluster,
     tls_only_security,
     wait_for_port,
 )
@@ -267,3 +269,27 @@ def test_tls_cluster(tls_client):
 async def test_tls_scheduler(security, cleanup):
     async with Scheduler(security=security, host="localhost") as s:
         assert s.address.startswith("tls")
+
+
+from distributed.core import Status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("w_cls", [Worker, Nanny])
+async def test_start_cluster_closes_scheduler_worker_failure(w_cls):
+    nthreads = [("127.0.0.1", 0)]
+    scheduler = "127.0.0.1"
+    loop = IOLoop.current()
+    for _ in range(2):
+        with pytest.raises(TypeError, match="got an unexpected keyword argument"):
+            await start_cluster(
+                nthreads,
+                scheduler,
+                loop,
+                security=None,
+                Worker=w_cls,
+                scheduler_kwargs={},
+                worker_kwargs={"dont": "start"},
+            )
+    assert all([s.status == Status.closed for s in Scheduler._instances])
+    assert all([w.status == Status.closed for w in Worker._instances])

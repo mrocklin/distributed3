@@ -184,7 +184,6 @@ def main(
         resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
 
     loop = IOLoop.current()
-    logger.info("-" * 47)
 
     scheduler = Scheduler(
         loop=loop,
@@ -196,12 +195,13 @@ def main(
         http_prefix=dashboard_prefix,
         **kwargs,
     )
-    logger.info("-" * 47)
 
     install_signal_handlers(loop)
 
     async def run():
+        logger.info("-" * 47)
         await scheduler
+        logger.info("-" * 47)
         await scheduler.finished()
 
     try:

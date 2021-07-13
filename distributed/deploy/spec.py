@@ -393,10 +393,16 @@ class SpecCluster(Cluster):
             if self.status == Status.created:
                 await self._start()
             await self.scheduler
-            await self._correct_state()
-            if self.workers:
-                await asyncio.wait(list(self.workers.values()))  # maybe there are more
-            return self
+            try:
+                await self._correct_state()
+                if self.workers:
+                    await asyncio.wait(
+                        list(self.workers.values())
+                    )  # maybe there are more
+                return self
+            except Exception:
+                await self._close()
+                raise
 
         return _().__await__()
 
@@ -428,7 +434,11 @@ class SpecCluster(Cluster):
 
             await self.scheduler.close()
             for w in self._created:
-                assert w.status == Status.closed, w.status
+                assert w.status in [
+                    Status.closed,
+                    # Failure during startup
+                    Status.undefined,
+                ], w.status
 
         if hasattr(self, "_old_logging_level"):
             silence_logging(self._old_logging_level)

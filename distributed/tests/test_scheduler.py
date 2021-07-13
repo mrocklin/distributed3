@@ -2936,3 +2936,10 @@ async def test_transition_counter(c, s, a, b):
     assert s.transition_counter == 0
     await c.submit(inc, 1)
     assert s.transition_counter > 1
+
+
+def test_init_twice_no_warning():
+    with pytest.warns(None) as records:
+        for _ in range(2):
+            Scheduler()
+    assert not records

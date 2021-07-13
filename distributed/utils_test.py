@@ -796,34 +796,37 @@ async def start_cluster(
         host=scheduler_addr,
         **scheduler_kwargs,
     )
-    workers = [
-        Worker(
-            s.address,
-            nthreads=ncore[1],
-            name=i,
-            security=security,
-            loop=loop,
-            validate=True,
-            host=ncore[0],
-            **(merge(worker_kwargs, ncore[2]) if len(ncore) > 2 else worker_kwargs),
-        )
-        for i, ncore in enumerate(nthreads)
-    ]
-    # for w in workers:
-    #     w.rpc = workers[0].rpc
+    try:
+        workers = [
+            Worker(
+                s.address,
+                nthreads=ncore[1],
+                name=i,
+                security=security,
+                loop=loop,
+                validate=True,
+                host=ncore[0],
+                **(merge(worker_kwargs, ncore[2]) if len(ncore) > 2 else worker_kwargs),
+            )
+            for i, ncore in enumerate(nthreads)
+        ]
+        # for w in workers:
+        #     w.rpc = workers[0].rpc
+        await asyncio.gather(*workers)
 
-    await asyncio.gather(*workers)
-
-    start = time()
-    while len(s.workers) < len(nthreads) or any(
-        comm.comm is None for comm in s.stream_comms.values()
-    ):
-        await asyncio.sleep(0.01)
-        if time() - start > 5:
-            await asyncio.gather(*[w.close(timeout=1) for w in workers])
-            await s.close(fast=True)
-            raise Exception("Cluster creation timeout")
-    return s, workers
+        start = time()
+        while len(s.workers) < len(nthreads) or any(
+            comm.comm is None for comm in s.stream_comms.values()
+        ):
+            await asyncio.sleep(0.01)
+            if time() - start > 5:
+                await asyncio.gather(*[w.close(timeout=1) for w in workers])
+                await s.close(fast=True)
+                raise Exception("Cluster creation timeout")
+        return s, workers
+    except Exception:
+        await s.close()
+        raise
 
 
 async def end_cluster(s, workers):

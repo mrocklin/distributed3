@@ -9,7 +9,6 @@ import tlz as toolz
 import dask
 from dask.distributed import Client, Nanny, Scheduler, SpecCluster, Worker
 
-from distributed.compatibility import WINDOWS
 from distributed.core import Status
 from distributed.deploy.spec import ProcessInterface, close_clusters, run_spec
 from distributed.metrics import time
@@ -218,7 +217,6 @@ async def test_restart(cleanup):
                     assert time() < start + 60
 
 
-@pytest.mark.skipif(WINDOWS, reason="HTTP Server doesn't close out")
 @pytest.mark.asyncio
 async def test_broken_worker():
     with pytest.raises(Exception) as info:
@@ -232,7 +230,6 @@ async def test_broken_worker():
     assert "Broken" in str(info.value)
 
 
-@pytest.mark.skipif(WINDOWS, reason="HTTP Server doesn't close out")
 @pytest.mark.slow
 def test_spec_close_clusters(loop):
     workers = {0: {"cls": Worker}}

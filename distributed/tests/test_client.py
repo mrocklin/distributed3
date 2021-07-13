@@ -6380,7 +6380,6 @@ async def test_performance_report(c, s, a, b):
     assert "Dask Performance Report" in data
     assert "x = da.random" in data
     assert "Threads: 4" in data
-    assert "distributed.scheduler - INFO - Clear task state" in data
     assert dask.__version__ in data
 
     # Stacklevel two captures code two frames back -- which in this case
@@ -6752,7 +6751,7 @@ async def test_get_client_functions_spawn_clusters(c, s, a):
         with LocalCluster(
             n_workers=1,
             processes=False,
-            dashboard_address=False,
+            dashboard_address=":0",
             worker_dashboard_address=False,
         ) as cluster2:
             with Client(cluster2) as c1:

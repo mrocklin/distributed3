@@ -84,6 +84,13 @@ from .utils_perf import disable_gc_diagnosis, enable_gc_diagnosis
 from .variable import VariableExtension
 
 try:
+    import bokeh  # noqa: F401
+
+    HAS_BOKEH = True
+except ImportError:
+    HAS_BOKEH = False
+
+try:
     from cython import compiled
 except ImportError:
     compiled = False
@@ -3438,24 +3445,11 @@ class Scheduler(SchedulerState, ServerNode):
             default_port=self.default_port,
         )
 
-        http_server_modules = dask.config.get("distributed.scheduler.http.routes")
-        show_dashboard = dashboard or (dashboard is None and dashboard_address)
-        missing_bokeh = False
-        # install vanilla route if show_dashboard but bokeh is not installed
-        if show_dashboard:
-            try:
-                import distributed.dashboard.scheduler
-            except ImportError:
-                missing_bokeh = True
-                http_server_modules.append("distributed.http.scheduler.missing_bokeh")
-        routes = get_handlers(
-            server=self, modules=http_server_modules, prefix=http_prefix
+        self._show_dashboard: bool = dashboard or (
+            dashboard is None and dashboard_address
         )
-        self.start_http_server(routes, dashboard_address, default_port=8787)
-        if show_dashboard and not missing_bokeh:
-            distributed.dashboard.scheduler.connect(
-                self.http_application, self.http_server, self, prefix=http_prefix
-            )
+        self._dashboard_address = dashboard_address
+        self._http_prefix = http_prefix
 
         # Communication state
         self.loop = loop or IOLoop.current()
@@ -3758,6 +3752,23 @@ class Scheduler(SchedulerState, ServerNode):
         enable_gc_diagnosis()
 
         self.clear_task_state()
+
+        http_server_modules = dask.config.get("distributed.scheduler.http.routes")
+        assert isinstance(http_server_modules, list)
+
+        # install vanilla route if show_dashboard but bokeh is not installed
+        if self._show_dashboard and not HAS_BOKEH:
+            http_server_modules.append("distributed.http.scheduler.missing_bokeh")
+        routes = get_handlers(
+            server=self, modules=http_server_modules, prefix=self._http_prefix
+        )
+        self.start_http_server(routes, self._dashboard_address, default_port=8787)
+        if self._show_dashboard and HAS_BOKEH:
+            import distributed.dashboard.scheduler
+
+            distributed.dashboard.scheduler.connect(
+                self.http_application, self.http_server, self, prefix=self._http_prefix
+            )
 
         with suppress(AttributeError):
             for c in self._worker_coroutines:
@@ -5463,7 +5474,7 @@ class Scheduler(SchedulerState, ServerNode):
     def clear_task_state(self):
         # XXX what about nested state such as ClientState.wants_what
         # (see also fire-and-forget...)
-        logger.info("Clear task state")
+        logger.debug("Clear task state")
         for collection in self._task_state_collections:
             collection.clear()
 

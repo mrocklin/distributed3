@@ -128,6 +128,9 @@ async def test_large_transfer(cleanup):
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings(
+    "ignore:Dashboard and Scheduler are using the same server on port"
+)
 @pytest.mark.parametrize(
     "dashboard,protocol,security,port",
     [

@@ -25,10 +25,14 @@ class ClusterTest:
         assert future.result() == 2
 
     def test_context_manager(self):
-        with self.Cluster(**self.kwargs) as c:
+        kwargs = self.kwargs.copy()
+        kwargs.pop("dashboard_address")
+        with self.Cluster(dashboard_address=":54321", **kwargs) as c:
             with Client(c) as e:
                 assert e.nthreads()
 
     def test_no_workers(self):
-        with self.Cluster(0, scheduler_port=0, **self.kwargs):
+        kwargs = self.kwargs.copy()
+        kwargs.pop("dashboard_address")
+        with self.Cluster(0, dashboard_address=":54321", scheduler_port=0, **kwargs):
             pass

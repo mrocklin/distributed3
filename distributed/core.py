@@ -426,7 +426,7 @@ class Server:
 
         logger.debug("Connection from %r to %s", address, type(self).__name__)
         self._comms[comm] = op
-        await self
+
         try:
             while True:
                 try:
