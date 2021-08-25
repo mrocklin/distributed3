@@ -32,12 +32,10 @@ ucx_create_endpoint = None
 ucx_create_listener = None
 
 
-def synchronize_stream(stream=0):
+def synchronize_ptds():
     import numba.cuda
 
-    ctx = numba.cuda.current_context()
-    cu_stream = numba.cuda.driver.drvapi.cu_stream(stream)
-    stream = numba.cuda.driver.Stream(ctx, cu_stream, None)
+    stream = numba.cuda.per_thread_default_stream()
     stream.synchronize()
 
 
@@ -220,13 +218,13 @@ class UCX(Comm):
 
                 # Send frames
 
-                # It is necessary to first synchronize the default stream before start sending
-                # We synchronize the default stream because UCX is not stream-ordered and
-                #  syncing the default stream will wait for other non-blocking CUDA streams.
+                # It is necessary to first synchronize the per-thread default stream before start sending
+                # We synchronize the per-thread default stream because UCX is not stream-ordered and
+                #  syncing the per-thread default stream will wait for other non-blocking CUDA streams.
                 # Note this is only sufficient if the memory being sent is not currently in use on
                 # non-blocking CUDA streams.
                 if any(cuda_send_frames):
-                    synchronize_stream(0)
+                    synchronize_ptds()
 
                 for each_frame in send_frames:
                     await self.ep.send(each_frame)
@@ -282,9 +280,9 @@ class UCX(Comm):
                 )
 
                 # It is necessary to first populate `frames` with CUDA arrays and synchronize
-                # the default stream before starting receiving to ensure buffers have been allocated
+                # the per-thread default stream before starting receiving to ensure buffers have been allocated
                 if any(cuda_recv_frames):
-                    synchronize_stream(0)
+                    synchronize_ptds()
 
                 for each_frame in recv_frames:
                     await self.ep.recv(each_frame)
