@@ -48,7 +48,13 @@ from distributed.metrics import time
 from distributed.utils import format_dashboard_link
 from distributed.utils_test import dec, div, gen_cluster, get_cert, inc, slowinc
 
-scheduler.PROFILING = False
+
+@pytest.fixture(autouse=True)
+def ensure_scheduler_profiling_off():
+    before = scheduler.PROFILING
+    scheduler.PROFILING = False
+    yield
+    scheduler.PROFILING = before
 
 
 @gen_cluster(client=True, scheduler_kwargs={"dashboard": True})
