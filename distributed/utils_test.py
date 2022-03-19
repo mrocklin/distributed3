@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Callable
@@ -28,6 +29,7 @@ from glob import glob
 from itertools import count
 from time import sleep
 from typing import Any, Literal
+from unittest.mock import patch
 
 from distributed.compatibility import MACOS
 from distributed.scheduler import Scheduler
@@ -78,6 +80,9 @@ try:
     import dask.array  # register config
 except ImportError:
     pass
+
+# https://docs.github.com/en/actions/learn-github-actions/environment-variables#default-environment-variables
+ON_CI = bool(os.environ.get("CI", False))
 
 
 logger = logging.getLogger(__name__)
@@ -225,6 +230,11 @@ original_config = copy.deepcopy(dask.config.config)
 
 
 def reset_config():
+    """Reset the global Dask config."""
+    warnings.warn(
+        "The function reset_config will be removed soon. Instead, consider using unitest.mock.patch.dict",
+        FutureWarning,
+    )
     dask.config.config.clear()
     dask.config.config.update(copy.deepcopy(original_config))
 
@@ -644,133 +654,136 @@ def cluster(
     enable_proctitle_on_children()
 
     with clean(timeout=active_rpc_timeout, threads=False) as loop:
-        if nanny:
-            _run_worker = run_nanny
-        else:
-            _run_worker = run_worker
+        with dask.config.set(config):
+            if nanny:
+                _run_worker = run_nanny
+            else:
+                _run_worker = run_worker
 
-        # The scheduler queue will receive the scheduler's address
-        scheduler_q = mp_context.Queue()
+            # The scheduler queue will receive the scheduler's address
+            scheduler_q = mp_context.Queue()
 
-        # Launch scheduler
-        scheduler = mp_context.Process(
-            name="Dask cluster test: Scheduler",
-            target=run_scheduler,
-            args=(scheduler_q, nworkers + 1, config),
-            kwargs=scheduler_kwargs,
-        )
-        ws.add(scheduler)
-        scheduler.daemon = True
-        scheduler.start()
-
-        # Launch workers
-        workers = []
-        for i in range(nworkers):
-            q = mp_context.Queue()
-            fn = "_test_worker-%s" % uuid.uuid4()
-            kwargs = merge(
-                {
-                    "nthreads": 1,
-                    "local_directory": fn,
-                    "memory_limit": system.MEMORY_LIMIT,
-                },
-                worker_kwargs,
+            # Launch scheduler
+            scheduler = mp_context.Process(
+                name="Dask cluster test: Scheduler",
+                target=run_scheduler,
+                args=(scheduler_q, nworkers + 1, config),
+                kwargs=scheduler_kwargs,
             )
-            proc = mp_context.Process(
-                name="Dask cluster test: Worker",
-                target=_run_worker,
-                args=(q, scheduler_q, config),
-                kwargs=kwargs,
-            )
-            ws.add(proc)
-            workers.append({"proc": proc, "queue": q, "dir": fn})
+            ws.add(scheduler)
+            scheduler.daemon = True
+            scheduler.start()
 
-        for worker in workers:
-            worker["proc"].start()
-        saddr_or_exception = scheduler_q.get()
-        if isinstance(saddr_or_exception, Exception):
-            raise saddr_or_exception
-        saddr = saddr_or_exception
+            # Launch workers
+            workers = []
+            for i in range(nworkers):
+                q = mp_context.Queue()
+                fn = "_test_worker-%s" % uuid.uuid4()
+                kwargs = merge(
+                    {
+                        "nthreads": 1,
+                        "local_directory": fn,
+                        "memory_limit": system.MEMORY_LIMIT,
+                    },
+                    worker_kwargs,
+                )
+                proc = mp_context.Process(
+                    name="Dask cluster test: Worker",
+                    target=_run_worker,
+                    args=(q, scheduler_q, config),
+                    kwargs=kwargs,
+                )
+                ws.add(proc)
+                workers.append({"proc": proc, "queue": q, "dir": fn})
 
-        for worker in workers:
-            addr_or_exception = worker["queue"].get()
-            if isinstance(addr_or_exception, Exception):
-                raise addr_or_exception
-            worker["address"] = addr_or_exception
+            for worker in workers:
+                worker["proc"].start()
+            saddr_or_exception = scheduler_q.get()
+            if isinstance(saddr_or_exception, Exception):
+                raise saddr_or_exception
+            saddr = saddr_or_exception
+
+            for worker in workers:
+                addr_or_exception = worker["queue"].get()
+                if isinstance(addr_or_exception, Exception):
+                    raise addr_or_exception
+                worker["address"] = addr_or_exception
+
+            start = time()
+            try:
+                try:
+                    security = scheduler_kwargs["security"]
+                    rpc_kwargs = {
+                        "connection_args": security.get_connection_args("client")
+                    }
+                except KeyError:
+                    rpc_kwargs = {}
+
+                with rpc(saddr, **rpc_kwargs) as s:
+                    while True:
+                        nthreads = loop.run_sync(s.ncores)
+                        if len(nthreads) == nworkers:
+                            break
+                        if time() - start > 5:
+                            raise Exception("Timeout on cluster creation")
+
+                # avoid sending processes down to function
+                yield {"address": saddr}, [
+                    {"address": w["address"], "proc": weakref.ref(w["proc"])}
+                    for w in workers
+                ]
+            finally:
+                logger.debug("Closing out test cluster")
+
+                loop.run_sync(
+                    lambda: disconnect_all(
+                        [w["address"] for w in workers],
+                        timeout=disconnect_timeout,
+                        rpc_kwargs=rpc_kwargs,
+                    )
+                )
+                loop.run_sync(
+                    lambda: disconnect(
+                        saddr, timeout=disconnect_timeout, rpc_kwargs=rpc_kwargs
+                    )
+                )
+
+                scheduler.terminate()
+                scheduler_q.close()
+                scheduler_q._reader.close()
+                scheduler_q._writer.close()
+
+                for w in workers:
+                    w["proc"].terminate()
+                    w["queue"].close()
+                    w["queue"]._reader.close()
+                    w["queue"]._writer.close()
+
+                scheduler.join(2)
+                del scheduler
+                for proc in [w["proc"] for w in workers]:
+                    proc.join(timeout=30)
+
+                with suppress(UnboundLocalError):
+                    del worker, w, proc
+                del workers[:]
+
+                for fn in glob("_test_worker-*"):
+                    with suppress(OSError):
+                        shutil.rmtree(fn)
+
+            try:
+                client = default_client()
+            except ValueError:
+                pass
+            else:
+                client.close()
 
         start = time()
-        try:
-            try:
-                security = scheduler_kwargs["security"]
-                rpc_kwargs = {"connection_args": security.get_connection_args("client")}
-            except KeyError:
-                rpc_kwargs = {}
-
-            with rpc(saddr, **rpc_kwargs) as s:
-                while True:
-                    nthreads = loop.run_sync(s.ncores)
-                    if len(nthreads) == nworkers:
-                        break
-                    if time() - start > 5:
-                        raise Exception("Timeout on cluster creation")
-
-            # avoid sending processes down to function
-            yield {"address": saddr}, [
-                {"address": w["address"], "proc": weakref.ref(w["proc"])}
-                for w in workers
-            ]
-        finally:
-            logger.debug("Closing out test cluster")
-
-            loop.run_sync(
-                lambda: disconnect_all(
-                    [w["address"] for w in workers],
-                    timeout=disconnect_timeout,
-                    rpc_kwargs=rpc_kwargs,
-                )
-            )
-            loop.run_sync(
-                lambda: disconnect(
-                    saddr, timeout=disconnect_timeout, rpc_kwargs=rpc_kwargs
-                )
-            )
-
-            scheduler.terminate()
-            scheduler_q.close()
-            scheduler_q._reader.close()
-            scheduler_q._writer.close()
-
-            for w in workers:
-                w["proc"].terminate()
-                w["queue"].close()
-                w["queue"]._reader.close()
-                w["queue"]._writer.close()
-
-            scheduler.join(2)
-            del scheduler
-            for proc in [w["proc"] for w in workers]:
-                proc.join(timeout=30)
-
-            with suppress(UnboundLocalError):
-                del worker, w, proc
-            del workers[:]
-
-            for fn in glob("_test_worker-*"):
-                with suppress(OSError):
-                    shutil.rmtree(fn)
-
-        try:
-            client = default_client()
-        except ValueError:
-            pass
-        else:
-            client.close()
-
-    start = time()
-    while any(proc.is_alive() for proc in ws):
-        text = str(list(ws))
-        sleep(0.2)
-        assert time() < start + 5, ("Workers still around after five seconds", text)
+        while any(proc.is_alive() for proc in ws):
+            text = str(list(ws))
+            sleep(0.2)
+            assert time() < start + 5, ("Workers still around after five seconds", text)
 
 
 async def disconnect(addr, timeout=3, rpc_kwargs=None):
@@ -786,7 +799,8 @@ async def disconnect(addr, timeout=3, rpc_kwargs=None):
                 # the timeout
                 await w.terminate(reply=False)
 
-    await asyncio.wait_for(do_disconnect(), timeout=timeout)
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(do_disconnect(), timeout=timeout)
 
 
 async def disconnect_all(addresses, timeout=3, rpc_kwargs=None):
@@ -1760,15 +1774,16 @@ def clean(threads=not WINDOWS, instances=True, timeout=1, processes=True):
             with check_process_leak(check=processes):
                 with check_instances() if instances else nullcontext():
                     with check_active_rpc(loop, timeout):
-                        reset_config()
+                        with patch.dict(original_config, clear=True):
+                            with dask.config.set(
+                                {"distributed.comm.timeouts.connect": "300s"}
+                            ):
+                                # Restore default logging levels
+                                # XXX use pytest hooks/fixtures instead?
+                                for name, level in logging_levels.items():
+                                    logging.getLogger(name).setLevel(level)
 
-                        dask.config.set({"distributed.comm.timeouts.connect": "5s"})
-                        # Restore default logging levels
-                        # XXX use pytest hooks/fixtures instead?
-                        for name, level in logging_levels.items():
-                            logging.getLogger(name).setLevel(level)
-
-                        yield loop
+                                yield loop
 
 
 @pytest.fixture
