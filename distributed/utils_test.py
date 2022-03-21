@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Callable
@@ -28,6 +29,7 @@ from glob import glob
 from itertools import count
 from time import sleep
 from typing import Any, Literal
+from unittest.mock import patch
 
 from distributed.compatibility import MACOS
 from distributed.scheduler import Scheduler
@@ -224,7 +226,21 @@ def mock_ipython():
 original_config = copy.deepcopy(dask.config.config)
 
 
+@contextmanager
+def clean_config():
+    """A contextmanager that ensures the dask config is reset to the original
+    state during interpreter startup upon exit.
+    """
+    with patch.dict(dask.config.config, original_config, clear=True):
+        yield
+
+
 def reset_config():
+    warnings.warn(
+        "This methods will be removed soon. Consider using the contextmanager "
+        "distributed.utils_test.clean_config instead",
+        DeprecationWarning,
+    )
     dask.config.config.clear()
     dask.config.config.update(copy.deepcopy(original_config))
 
@@ -1760,9 +1776,7 @@ def clean(threads=not WINDOWS, instances=True, timeout=1, processes=True):
             with check_process_leak(check=processes):
                 with check_instances() if instances else nullcontext():
                     with check_active_rpc(loop, timeout):
-                        reset_config()
 
-                        dask.config.set({"distributed.comm.timeouts.connect": "5s"})
                         # Restore default logging levels
                         # XXX use pytest hooks/fixtures instead?
                         for name, level in logging_levels.items():

@@ -18,6 +18,13 @@ else:
 
 # Make all fixtures available
 from distributed.utils_test import *  # noqa
+from distributed.utils_test import clean_config
+
+
+@pytest.fixture(autouse=True)
+def ensure_config_reset():
+    with clean_config():
+        yield
 
 
 def pytest_addoption(parser):
