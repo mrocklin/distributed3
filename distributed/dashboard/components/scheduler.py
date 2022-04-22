@@ -1693,6 +1693,7 @@ class StealingTimeSeries(DashboardComponent):
         self.root = figure(
             title="Idle and Saturated Workers Over Time",
             x_axis_type="datetime",
+            height=150,
             tools="",
             x_range=x_range,
             **kwargs,
@@ -1743,6 +1744,7 @@ class StealingEvents(DashboardComponent):
         self.root = figure(
             title="Stealing Events",
             x_axis_type="datetime",
+            height=250,
             tools="",
             x_range=x_range,
             **kwargs,

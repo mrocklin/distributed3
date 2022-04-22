@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
 from collections import defaultdict, deque
 from collections.abc import Container
+from functools import partial
 from math import log2
 from time import time
 
@@ -190,27 +192,24 @@ class WorkStealing(SchedulerPlugin):
         For example a result of zero implies a task without dependencies.
         level: The location within a stealable list to place this value
         """
+        if not ts.dependencies:  # no dependencies fast path
+            return 0, 0
+
         split = ts.prefix.name
         if split in fast_tasks:
             return None, None
 
-        if not ts.dependencies:  # no dependencies fast path
-            return 0, 0
-
         ws = ts.processing_on
         compute_time = ws.processing[ts]
-        if compute_time < 0.005:  # 5ms, just give up
-            return None, None
 
         nbytes = ts.get_nbytes_deps()
         transfer_time = nbytes / self.scheduler.bandwidth + LATENCY
         cost_multiplier = transfer_time / compute_time
-        if cost_multiplier > 100:
-            return None, None
 
         level = int(round(log2(cost_multiplier) + 6))
         if level < 1:
             level = 1
+        level = min(len(self.cost_multipliers) - 1, level)
 
         return cost_multiplier, level
 
@@ -361,6 +360,7 @@ class WorkStealing(SchedulerPlugin):
             if occ_idl + cost_multiplier * duration <= occ_sat - duration / 2:
                 self.move_task_request(ts, sat, idl)
                 log.append(
+                    # The format of this message is tightly coupled to the dashboard
                     (
                         start,
                         level,
@@ -417,7 +417,10 @@ class WorkStealing(SchedulerPlugin):
                         thieves = _potential_thieves_for(ts, idle)
                         if not thieves:
                             break
-                        thief = thieves[i % len(thieves)]
+
+                        thief = self._maybe_pick_thief(ts, thieves)
+                        if not thief:
+                            thief = thieves[i % len(thieves)]
 
                         duration = sat.processing.get(ts)
                         if duration is None:
@@ -450,7 +453,10 @@ class WorkStealing(SchedulerPlugin):
                         thieves = _potential_thieves_for(ts, idle)
                         if not thieves:
                             continue
-                        thief = thieves[i % len(thieves)]
+                        thief = self._maybe_pick_thief(ts, thieves)
+                        if not thief:
+                            thief = thieves[i % len(thieves)]
+
                         duration = sat.processing[ts]
 
                         maybe_move_task(
@@ -463,6 +469,32 @@ class WorkStealing(SchedulerPlugin):
             stop = time()
             if s.digests:
                 s.digests["steal-duration"].add(stop - start)
+
+    def _maybe_pick_thief(self, ts, thieves):
+        """Try to be smart about picking a thief given some options. We're
+        trying to pick a thief which has dependencies for a given task, if
+        possible and will pick the one which works best for us given the
+        Scheduler.worker_objective
+
+        If no idle worker with dependencies is found, this returns None.
+        """
+        if ts._dependencies:
+            who_has = set()
+            for dep in ts._dependencies:
+                who_has.update(dep.who_has)
+
+            thieves_with_data = list(who_has & set(thieves))
+
+            # If there are potential thieves with dependencies we
+            # should prefer them and pick the one which works best.
+            # Otherwise just random/round robin
+            if thieves_with_data:
+                if len(thieves_with_data) > 10:
+                    thieves_with_data = random.choices(thieves_with_data, k=10)
+                return min(
+                    thieves_with_data,
+                    key=partial(self.scheduler.worker_objective, ts),
+                )
 
     def restart(self, scheduler):
         for stealable in self.stealable.values():
