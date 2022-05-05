@@ -2098,3 +2098,17 @@ def has_pytestmark(test_func: Callable, name: str) -> bool:
     """
     marks = getattr(test_func, "pytestmark", [])
     return any(mark.name == name for mark in marks)
+
+
+def hold_gil(seconds: float) -> None:
+    """Block the GIL for seconds"""
+    import ctypes
+    import ctypes.util
+
+    libc_name = ctypes.util.find_library("c")
+    if libc_name is None:
+        raise RuntimeError("Cannot find libc")
+    # Use libc in ctypes' "PyDLL" mode, which prevents CPython from
+    # releasing the GIL during procedure calls.
+    usleep = ctypes.PyDLL(libc_name)["usleep"]
+    usleep(int(1e6 * seconds))

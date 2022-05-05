@@ -27,6 +27,7 @@ from distributed.utils_test import (
     dump_cluster_state,
     gen_cluster,
     gen_test,
+    hold_gil,
     inc,
     new_config,
     tls_only_security,
@@ -693,3 +694,28 @@ def test_worker_fail_hard(capsys):
         test_fail_hard()
 
     assert "abcd" in str(info.value)
+
+
+@gen_test()
+async def test_block_gil():
+    # This test technically doesn't test the GIL but the event loop but close
+    # enough
+    last = None
+    please_stop = False
+
+    async def tick():
+        while not please_stop:
+            nonlocal last
+            last = time()
+            await asyncio.sleep(0)
+
+    tick_task = asyncio.create_task(tick())
+    while not last:
+        await asyncio.sleep(0)
+    before = last
+    hold_gil(0.2)
+    assert last == before, (last, before)
+    await asyncio.sleep(0)
+    assert last - before >= 0.2, last - before
+    please_stop = True
+    await tick_task

@@ -10,7 +10,7 @@ from tlz import concat, sliding_window
 from dask import delayed
 
 from distributed import Client, Nanny, wait
-from distributed.chaos import KillWorker
+from distributed.chaos import BlockGIL, KillWorker
 from distributed.compatibility import WINDOWS
 from distributed.config import config
 from distributed.metrics import time
@@ -296,6 +296,30 @@ async def test_chaos_rechunk(c, s, *workers):
     s.allowed_failures = 10000
 
     plugin = KillWorker(delay="4 s", mode="sys.exit")
+
+    await c.register_worker_plugin(plugin, name="kill")
+
+    da = pytest.importorskip("dask.array")
+
+    x = da.random.random((10000, 10000))
+    y = x.rechunk((10000, 20)).rechunk((20, 10000)).sum()
+    z = c.compute(y)
+
+    start = time()
+    while time() < start + 10:
+        if z.status == "error":
+            await z
+        if z.status == "finished":
+            return
+        await asyncio.sleep(0.1)
+
+    await z.cancel()
+
+
+@gen_cluster(client=True, Worker=Nanny, nthreads=[("127.0.0.1", 2)])
+async def test_chaos_gil(c, s, *workers):
+
+    plugin = BlockGIL(interval="100 s", duration="1s")
 
     await c.register_worker_plugin(plugin, name="kill")
 

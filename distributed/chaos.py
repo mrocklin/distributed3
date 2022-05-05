@@ -4,11 +4,41 @@ import asyncio
 import ctypes
 import random
 import sys
+import time
 from typing import Literal
 
 from dask.utils import parse_timedelta
 
 from distributed.diagnostics.plugin import WorkerPlugin
+from distributed.utils_test import hold_gil
+
+
+class BlockGIL(WorkerPlugin):
+    def __init__(
+        self,
+        interval: str | int | float = "100 s",
+        duration: str | int | float = "1 s",
+    ):
+        self.interval = parse_timedelta(interval)
+        self.duration = parse_timedelta(duration)
+        self.stop = False
+
+    async def setup(self, worker):
+        self.worker = worker
+        loop = self.worker.loop.asyncio_loop
+
+        def _hold_gil():
+
+            time.sleep(random.expovariate(1 / self.interval))
+            hold_gil(self.duration)
+            if self.stop:
+                return
+            loop.call_soon(_hold_gil)
+
+        _hold_gil()
+
+    def teardown(self):
+        self.stop = True
 
 
 class KillWorker(WorkerPlugin):
