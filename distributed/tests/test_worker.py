@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import gc
 import importlib
 import logging
@@ -91,7 +92,7 @@ pytestmark = pytest.mark.ci1
 @gen_cluster(nthreads=[])
 async def test_worker_nthreads(s):
     async with Worker(s.address) as w:
-        assert w.executor._max_workers == CPU_COUNT
+        assert w.state.nthreads == CPU_COUNT
 
 
 @gen_cluster()
@@ -2241,7 +2242,7 @@ async def test_process_executor_raise_exception(c, s, a, b):
 async def test_gpu_executor(c, s, w):
     if nvml.device_get_count() > 0:
         e = w.executors["gpu"]
-        assert isinstance(e, distributed.threadpoolexecutor.ThreadPoolExecutor)
+        assert isinstance(e, concurrent.futures.ThreadPoolExecutor)
         assert e._max_workers == 1
     else:
         assert "gpu" not in w.executors

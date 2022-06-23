@@ -4,13 +4,12 @@ from contextlib import contextmanager
 import dask
 
 from distributed.metrics import time
-from distributed.threadpoolexecutor import rejoin, secede
 from distributed.worker import get_client, get_worker, thread_state
 from distributed.worker_state_machine import SecedeEvent
 
 
 @contextmanager
-def worker_client(timeout=None, separate_thread=True):
+def worker_client(timeout=None):
     """Get client for this thread
 
     This context manager is intended to be called within functions that we run
@@ -22,9 +21,7 @@ def worker_client(timeout=None, separate_thread=True):
     timeout : Number or String
         Timeout after which to error out. Defaults to the
         ``distributed.comm.timeouts.connect`` configuration value.
-    separate_thread : bool, optional
-        Whether to run this function outside of the normal thread pool
-        defaults to True
+
 
     Examples
     --------
@@ -49,24 +46,27 @@ def worker_client(timeout=None, separate_thread=True):
 
     timeout = dask.utils.parse_timedelta(timeout, "s")
 
-    worker = get_worker()
     client = get_client(timeout=timeout)
-    if separate_thread:
-        duration = time() - thread_state.start_time
-        secede()  # have this thread secede from the thread pool
-        worker.loop.add_callback(
-            worker.handle_stimulus,
-            SecedeEvent(
-                key=thread_state.key,
-                compute_duration=duration,
-                stimulus_id=f"worker-client-secede-{time()}",
-            ),
-        )
+    with secede():
+        yield client
 
-    yield client
 
-    if separate_thread:
-        rejoin()
+@contextmanager
+def secede():
+    worker = get_worker()
+    duration = time() - thread_state.start_time
+    worker.loop.add_callback(
+        worker.handle_stimulus,
+        SecedeEvent(
+            key=thread_state.key,
+            compute_duration=duration,
+            stimulus_id=f"worker-client-secede-{time()}",
+        ),
+    )
+
+    yield
+
+    # FIXME: handle_stimulus_rejoin see https://github.com/dask/distributed/issues/5882
 
 
 def local_client(*args, **kwargs):

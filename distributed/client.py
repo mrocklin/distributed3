@@ -78,7 +78,6 @@ from distributed.publish import Datasets
 from distributed.pubsub import PubSubClientExtension
 from distributed.security import Security
 from distributed.sizeof import sizeof
-from distributed.threadpoolexecutor import rejoin
 from distributed.utils import (
     CancelledError,
     LoopRunner,
@@ -102,7 +101,7 @@ from distributed.utils_comm import (
     scatter_to_workers,
     unpack_remotedata,
 )
-from distributed.worker import get_client, get_worker, secede
+from distributed.worker import get_client, get_worker
 
 logger = logging.getLogger(__name__)
 
@@ -2990,19 +2989,11 @@ class Client(SyncMethodMixin):
         )
         packed = pack_data(keys, futures)
         if sync:
-            if getattr(thread_state, "key", False):
-                try:
-                    secede()
-                    should_rejoin = True
-                except Exception:
-                    should_rejoin = False
             try:
                 results = self.gather(packed, asynchronous=asynchronous, direct=direct)
             finally:
                 for f in futures.values():
                     f.release()
-                if getattr(thread_state, "key", False) and should_rejoin:
-                    rejoin()
             return results
         return packed
 

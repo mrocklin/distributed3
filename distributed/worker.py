@@ -22,7 +22,7 @@ from collections.abc import (
     Mapping,
     MutableMapping,
 )
-from concurrent.futures import Executor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import suppress
 from datetime import timedelta
 from inspect import isawaitable
@@ -75,8 +75,6 @@ from distributed.pubsub import PubSubWorkerExtension
 from distributed.security import Security
 from distributed.shuffle import ShuffleWorkerExtension
 from distributed.sizeof import safe_sizeof as sizeof
-from distributed.threadpoolexecutor import ThreadPoolExecutor
-from distributed.threadpoolexecutor import secede as tpe_secede
 from distributed.utils import (
     TimeoutError,
     _maybe_complex,
@@ -662,7 +660,7 @@ class Worker(BaseWorker, ServerNode):
             self.executors["default"] = executor
         if "default" not in self.executors:
             self.executors["default"] = ThreadPoolExecutor(
-                nthreads, thread_name_prefix="Dask-Default-Threads"
+                thread_name_prefix="Dask-Default-Threads"
             )
 
         self.batched_stream = BatchedSend(interval="2ms", loop=self.loop)
@@ -1535,11 +1533,7 @@ class Worker(BaseWorker, ServerNode):
                 continue  # Never shutdown the offload executor
 
             def _close():
-                if isinstance(executor, ThreadPoolExecutor):
-                    executor._work_queue.queue.clear()
-                    executor.shutdown(wait=executor_wait, timeout=timeout)
-                else:
-                    executor.shutdown(wait=executor_wait)
+                executor.shutdown(wait=executor_wait)
 
             # Waiting for the shutdown can block the event loop causing
             # weird deadlocks particularly if the task that is executing in
@@ -2627,7 +2621,6 @@ def secede():
     get_worker
     """
     worker = get_worker()
-    tpe_secede()  # have this thread secede from the thread pool
     duration = time() - thread_state.start_time
     worker.loop.add_callback(
         worker.handle_stimulus,

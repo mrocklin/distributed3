@@ -1,8 +1,6 @@
 import asyncio
-import random
 import threading
 from collections import defaultdict
-from time import sleep
 
 import pytest
 
@@ -158,24 +156,6 @@ async def test_async(c, s, a, b):
     while len(a.data) + len(b.data) > 1:
         await asyncio.sleep(0.1)
         assert time() < start + 3
-
-
-@gen_cluster(client=True, nthreads=[("127.0.0.1", 3)])
-async def test_separate_thread_false(c, s, a):
-    a.count = 0
-
-    def f(i):
-        with worker_client(separate_thread=False) as client:
-            get_worker().count += 1
-            assert get_worker().count <= 3
-            sleep(random.random() / 40)
-            assert get_worker().count <= 3
-            get_worker().count -= 1
-        return i
-
-    futures = c.map(f, range(20))
-    results = await c._gather(futures)
-    assert list(results) == list(range(20))
 
 
 @gen_cluster(client=True)
