@@ -2965,7 +2965,13 @@ class Scheduler(SchedulerState, ServerNode):
         routes = get_handlers(
             server=self, modules=http_server_modules, prefix=http_prefix
         )
-        self.start_http_server(routes, dashboard_address, default_port=8787)
+        self.start_http_server(
+            routes,
+            dashboard_address,
+            default_port=dask.config.get(
+                "distributed.scheduler.dashboard.default-port"
+            ),
+        )
         if show_dashboard:
             distributed.dashboard.scheduler.connect(
                 self.http_application, self.http_server, self, prefix=http_prefix

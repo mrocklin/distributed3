@@ -32,6 +32,7 @@ distributed:
       split-shuffle: 1us
     validate: False         # Check scheduler state at every step for debugging
     dashboard:
+      default-port: 8787
       status:
         task-stream-length: 1000
       tasks:

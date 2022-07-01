@@ -179,6 +179,9 @@ properties:
               Configuration options for Dask's real-time dashboard
 
             properties:
+              default-port:
+                type: object
+                description: The default port for the dashboard and HTTP server
               status:
                 type: object
                 description: The main status page of the dashboard

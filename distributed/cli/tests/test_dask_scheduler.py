@@ -6,7 +6,6 @@ import psutil
 import pytest
 
 pytest.importorskip("requests")
-
 import os
 import shutil
 import signal
@@ -18,6 +17,7 @@ from time import sleep
 import requests
 from click.testing import CliRunner
 
+import dask
 from dask.utils import tmpfile
 
 import distributed
@@ -44,7 +44,9 @@ def test_defaults(loop, requires_default_ports):
 
         async def f():
             # Default behaviour is to listen on all addresses
-            await assert_can_connect_from_everywhere_4_6(8786, timeout=5.0)
+            await assert_can_connect_from_everywhere_4_6(
+                Scheduler.default_port, timeout=5.0
+            )
 
         with Client(f"127.0.0.1:{Scheduler.default_port}", loop=loop) as c:
             c.sync(f)
@@ -65,9 +67,14 @@ def test_hostport(loop):
 
 
 def test_no_dashboard(loop, requires_default_ports):
+    dashboard_default_port = dask.config.get(
+        "distributed.scheduler.dashboard.default-port"
+    )
     with popen(["dask-scheduler", "--no-dashboard"]):
         with Client(f"127.0.0.1:{Scheduler.default_port}", loop=loop):
-            response = requests.get("http://127.0.0.1:8787/status/")
+            response = requests.get(
+                f"http://127.0.0.1:{dashboard_default_port}/status/"
+            )
             assert response.status_code == 404
 
 
@@ -132,10 +139,10 @@ def test_dashboard_non_standard_ports(loop):
 
 
 @pytest.mark.skipif(not LINUX, reason="Need 127.0.0.2 to mean localhost")
-def test_dashboard_allowlist(loop):
+def test_dashboard_allowlist(loop, dashboard_default_port):
     pytest.importorskip("bokeh")
     with pytest.raises(Exception):
-        requests.get("http://localhost:8787/status/").ok
+        requests.get(f"http://localhost:{dashboard_default_port}/status/").ok
 
     port = open_port()
     with popen(
@@ -151,7 +158,9 @@ def test_dashboard_allowlist(loop):
         while True:
             try:
                 for name in ["127.0.0.2", "127.0.0.3"]:
-                    response = requests.get("http://%s:8787/status/" % name)
+                    response = requests.get(
+                        f"http://{name}:{dashboard_default_port}/status/"
+                    )
                     assert response.ok
                 break
             except Exception as f:

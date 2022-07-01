@@ -62,8 +62,7 @@ pem_file_option_type = click.Path(exists=True, resolve_path=True)
 @click.option(
     "--dashboard-address",
     type=str,
-    default=":8787",
-    show_default=True,
+    default=None,
     help="Address on which to listen for diagnostics dashboard",
 )
 @click.option(
