@@ -47,6 +47,7 @@ from distributed.worker_state_machine import (
     SerializedTask,
     StateMachineEvent,
     TaskErredMsg,
+    TaskFinishedMsg,
     TaskState,
     TransitionCounterMaxExceeded,
     UnpauseEvent,
@@ -1293,3 +1294,35 @@ def test_gather_dep_failure(ws):
     ]
     assert ws.tasks["x"].state == "error"
     assert ws.tasks["y"].state == "waiting"  # Not ready
+
+
+@pytest.mark.parametrize("fail", [True, False])
+def test_executing_cancelled_fetch_executing(ws, fail):
+    """See also test_cancelled_state.py::test_resumed_cancelled_handle_compute for full example"""
+
+    ws2 = "127.0.0.1:2"
+    instructions = ws.handle_stimulus(
+        ComputeTaskEvent.dummy("x", stimulus_id="s1"),
+        FreeKeysEvent(keys=["x"], stimulus_id="s2"),
+        ComputeTaskEvent.dummy("y", who_has={"x": [ws2]}, stimulus_id="s3"),
+        FreeKeysEvent(keys=["y"], stimulus_id="s4"),
+        ComputeTaskEvent.dummy("x", stimulus_id="s5"),
+    )
+
+    assert len(instructions) == 1
+    assert instructions[0] == Execute(key="x", stimulus_id="s1")
+    if fail:
+        instructions = ws.handle_stimulus(
+            ExecuteFailureEvent.dummy(key="x", stimulus_id="s6")
+        )
+        assert len(instructions) == 1
+        assert isinstance(instructions[0], TaskErredMsg)
+        assert ws.tasks["x"].state == "error"
+
+    else:
+        instructions = ws.handle_stimulus(
+            ExecuteSuccessEvent.dummy(key="x", stimulus_id="s6")
+        )
+        assert len(instructions) == 1
+        assert isinstance(instructions[0], TaskFinishedMsg)
+        assert ws.tasks["x"].state == "memory"
