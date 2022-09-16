@@ -4296,22 +4296,26 @@ class Client(SyncMethodMixin):
         self, check: bool = False, packages: Sequence[str] | None = None
     ) -> VersionsDict:
         packages = packages or []
-        client = version_module.get_versions(packages=packages)
-        scheduler = await self.scheduler.versions(packages=packages)
-        workers = await self.scheduler.broadcast(
-            msg={"op": "versions", "packages": packages},
-            on_error="ignore",
-        )
-        result = VersionsDict(scheduler=scheduler, workers=workers, client=client)
-
+        result = await self._fetch_versions(packages)
         if check:
-            msg = version_module.error_message(scheduler, workers, client)
+            msg = version_module.error_message(
+                result["scheduler"], result["workers"], result["client"]
+            )
             if msg["warning"]:
                 warnings.warn(msg["warning"])
             if msg["error"]:
                 raise ValueError(msg["error"])
 
         return result
+
+    async def _fetch_versions(self, packages: Sequence[str]) -> VersionsDict:
+        client = version_module.get_versions(packages=packages)
+        scheduler = await self.scheduler.versions(packages=packages)
+        workers = await self.scheduler.broadcast(
+            msg={"op": "versions", "packages": packages},
+            on_error="ignore",
+        )
+        return VersionsDict(scheduler=scheduler, workers=workers, client=client)
 
     def futures_of(self, futures):
         """Wrapper method of futures_of

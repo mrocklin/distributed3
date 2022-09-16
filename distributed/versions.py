@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import platform
+import re
 import struct
 import sys
 from collections.abc import Callable, Iterable
@@ -26,6 +27,27 @@ optional_packages = [
     ("pandas", lambda p: p.__version__),
     ("lz4", lambda p: p.__version__),
 ]
+
+# Error on mismatch of lambda result, warn otherwise
+error_packages = {
+    "python": lambda v: _remove_patch(v),  # Error on major and minor, warn on patch
+}
+
+
+def _remove_patch(version: str) -> str:
+    """Remove the patch and any additional pre-release/metadata
+    from a string-representation of a semantic version.
+
+    Returns
+    -------
+    Semantic version of the form "<major>.<minor>" if `version` follows that pattern,
+    `version` otherwise.
+    """
+    match = re.match(r"\d+\.\d+", version)
+    if match:
+        return match.group(0)
+    else:
+        return version
 
 
 # only these scheduler packages will be checked for version mismatch
@@ -106,8 +128,6 @@ def get_package_info(
 
 
 def error_message(scheduler, workers, source, source_name="Client"):
-    from distributed.utils import asciitable
-
     source = source.get("packages") if source else "UNKNOWN"
     scheduler = scheduler.get("packages") if scheduler else "UNKNOWN"
     workers = {k: v.get("packages") if v else "UNKNOWN" for k, v in workers.items()}
@@ -118,7 +138,8 @@ def error_message(scheduler, workers, source, source_name="Client"):
     for worker in workers:
         packages.update(workers.get(worker))
 
-    errs = []
+    errors = []
+    warnings = []
     notes = []
     for pkg in sorted(packages):
         versions = set()
@@ -148,20 +169,37 @@ def error_message(scheduler, workers, source, source_name="Client"):
         elif len(worker_versions) == 0:
             worker_versions = None
 
-        errs.append((pkg, source_version, scheduler_version, worker_versions))
         if pkg in notes_mismatch_package.keys():
             notes.append(f"-  {pkg}: {notes_mismatch_package[pkg]}")
 
+        pkg_info = (pkg, source_version, scheduler_version, worker_versions)
+        if version_extractor := error_packages.get(pkg):
+            versions = {version_extractor(version) for version in versions}
+            if len(versions) > 1:
+                errors.append(pkg_info)
+                continue
+        warnings.append(pkg_info)
+
     out = {"warning": "", "error": ""}
 
-    if errs:
-        err_table = asciitable(["Package", source_name, "Scheduler", "Workers"], errs)
-        err_msg = f"Mismatched versions found\n\n{err_table}"
+    if errors:
+        message = _generate_mismatch_table(errors, source_name)
+        out["error"] += message
+    if warnings:
+        message = _generate_mismatch_table(warnings, source_name)
         if notes:
-            err_msg += "\nNotes: \n{}".format("\n".join(notes))
-        out["warning"] += err_msg
+            message += "\nNotes: \n{}".format("\n".join(notes))
+        out["warning"] += message
 
     return out
+
+
+def _generate_mismatch_table(mismatches, source_name):
+    from distributed.utils import asciitable
+
+    table = asciitable(["Package", source_name, "Scheduler", "Workers"], mismatches)
+    msg = f"Mismatched versions found\n\n{table}"
+    return msg
 
 
 class VersionMismatchWarning(Warning):

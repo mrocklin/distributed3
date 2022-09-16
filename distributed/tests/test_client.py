@@ -7574,3 +7574,84 @@ async def test_wait_for_workers_n_workers_value_check(c, s, a, b, value, excepti
         ctx = nullcontext()
     with ctx:
         await c.wait_for_workers(value)
+
+
+@pytest.mark.parametrize("check", [True, False])
+@gen_cluster(client=True)
+async def test_get_versions_without_mismatch(c, s, a, b, check):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        await c.get_versions(check)
+
+
+def _increment_version(version: str, index: int) -> str:
+    split = version.split(".")
+    split[index] = str(int(split[index]) + 1)
+    return ".".join(split)
+
+
+@pytest.mark.parametrize("check", [True, False])
+@gen_cluster(client=True)
+async def test_get_versions_on_python_minor_mismatch(c, s, a, b, check):
+    def mismatched_versions(packages=None):
+        result = a.versions(packages)
+        version = result["packages"]["python"]
+        version = _increment_version(version, 1)
+        result["packages"]["python"] = version
+        return result
+
+    old_versions_handler = a.handlers["versions"]
+    a.handlers["versions"] = mismatched_versions
+
+    if check:
+        with pytest.raises(ValueError, match="Mismatched versions found"):
+            await c.get_versions(check=True)
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            await c.get_versions(check=False)
+
+
+@pytest.mark.parametrize("check", [True, False])
+@gen_cluster(client=True)
+async def test_get_versions_on_python_patch_mismatch(c, s, a, b, check):
+    def mismatched_versions(packages=None):
+        result = a.versions(packages)
+        version = result["packages"]["python"]
+        version = _increment_version(version, 2)
+        result["packages"]["python"] = version
+        return result
+
+    old_versions_handler = a.handlers["versions"]
+    a.handlers["versions"] = mismatched_versions
+
+    if check:
+        with pytest.warns(match="Mismatched versions found"):
+            await c.get_versions(check=True)
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            await c.get_versions(check=False)
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+@pytest.mark.parametrize("check", [True, False])
+@gen_cluster(client=True)
+async def test_get_versions_on_dask_mismatch(c, s, a, b, check, index):
+    def mismatched_versions(packages=None):
+        result = a.versions(packages)
+        version = result["packages"]["dask"]
+        version = _increment_version(version, index)
+        result["packages"]["dask"] = version
+        return result
+
+    old_versions_handler = a.handlers["versions"]
+    a.handlers["versions"] = mismatched_versions
+
+    if check:
+        with pytest.warns(match="Mismatched versions found"):
+            await c.get_versions(check=True)
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            await c.get_versions(check=False)

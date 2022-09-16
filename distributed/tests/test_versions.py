@@ -110,11 +110,11 @@ def test_scheduler_additional_irrelevant_package(kwargs_matching):
 def test_python_mismatch(kwargs_matching):
     kwargs_matching["source"]["packages"]["python"] = "0.0.0"
     msg = error_message(**kwargs_matching)
-    assert "Mismatched versions found" in msg["warning"]
-    assert "python" in msg["warning"]
+    assert "Mismatched versions found" in msg["error"]
+    assert "python" in msg["error"]
     assert (
         "0.0.0"
-        in re.search(r"python\s+(?:(?:\|[^|\r\n]*)+\|(?:\r?\n|\r)?)+", msg["warning"])
+        in re.search(r"python\s+(?:(?:\|[^|\r\n]*)+\|(?:\r?\n|\r)?)+", msg["error"])
         .group(0)
         .split("|")[1]
         .strip()
