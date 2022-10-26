@@ -7744,3 +7744,22 @@ async def test_wait_for_workers_n_workers_value_check(c, s, a, b, value, excepti
         ctx = nullcontext()
     with ctx:
         await c.wait_for_workers(value)
+
+
+@gen_cluster(client=True)
+async def test_repartition_coassignment(c, s, a, b):
+    ddf = dask.datasets.timeseries(
+        start="2000-01-01",
+        end="2000-01-17",
+        dtypes={"x": float, "y": float},
+        freq="1d",
+    )
+    assert ddf.npartitions == 16
+    ddf_repart = ddf.repartition(npartitions=ddf.npartitions // 2)
+
+    fut = c.compute(ddf_repart)
+
+    while not a.state.tasks and b.state.tasks:
+        await asyncio.sleep(0.1)
+
+    assert len(a.state.tasks) == len(b.state.tasks)

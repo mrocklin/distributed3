@@ -1307,6 +1307,8 @@ class TaskState:
     #: Task annotations
     annotations: dict[str, Any]
 
+    cogroup: int | None
+
     #: Cached hash of :attr:`~TaskState.client_key`
     _hash: int
 
@@ -1351,6 +1353,7 @@ class TaskState:
         self.metadata = {}
         self.annotations = {}
         self.erred_on = set()
+        self.cogroup = None
         TaskState._instances.add(self)
 
     def __hash__(self) -> int:
@@ -1468,6 +1471,7 @@ class SchedulerState:
     """
 
     bandwidth: int
+    cogroups: dict[int, set[TaskState]]
 
     #: Clients currently connected to the scheduler
     clients: dict[str, ClientState]
@@ -1623,7 +1627,7 @@ class SchedulerState:
             ws for ws in self.workers.values() if ws.status == Status.running
         }
         self.plugins = {} if not plugins else {_get_plugin_name(p): p for p in plugins}
-
+        self.cogroups = {}
         # Variables from dask.config, cached by __init__ for performance
         self.UNKNOWN_TASK_DURATION = parse_timedelta(
             dask.config.get("distributed.scheduler.unknown-task-duration")
@@ -2066,6 +2070,40 @@ class SchedulerState:
                 pdb.set_trace()
             raise
 
+    def cogroup_objective(self, cogroup: int, ws: WorkerState) -> tuple:
+        # Cogroups are not always connected subgraphs but if we assume they
+        # were, only the top prio task would need a transfer
+        tasks_in_group = self.cogroups[cogroup]
+        # TODO: this could be made more efficient / we should remeber max if it is required
+        ts_top_prio = max(tasks_in_group, key=lambda ts: ts.priority)
+        dts: TaskState
+        comm_bytes: int = 0
+        cotasks_on_worker = 0
+        for ts in tasks_in_group:
+            if ts in ws.processing or ws in ts.who_has:
+                cotasks_on_worker += 1
+        for dts in ts_top_prio.dependencies:
+            if (
+                # This is new compared to worker_objective
+                (dts not in tasks_in_group or dts not in ws.processing)
+                and ws not in dts.who_has
+            ):
+                nbytes = dts.get_nbytes()
+                comm_bytes += nbytes
+
+        stack_time: float = ws.occupancy / ws.nthreads
+        start_time: float = stack_time + comm_bytes / self.bandwidth
+
+        if ts_top_prio.actor:
+            raise NotImplementedError("Cogroup assignment for actors not implemented")
+        else:
+            return (-cotasks_on_worker, start_time, ws.nbytes)
+
+    def decide_worker_cogroup(self, ts) -> WorkerState | None:
+        assert ts.cogroup is not None
+        pool = self.running
+        return min(pool, key=partial(self.cogroup_objective, ts.cogroup))
+
     def decide_worker_rootish_queuing_disabled(
         self, ts: TaskState
     ) -> WorkerState | None:
@@ -2251,21 +2289,13 @@ class SchedulerState:
         """
         try:
             ts: TaskState = self.tasks[key]
-
-            if self.is_rootish(ts):
-                # NOTE: having two root-ish methods is temporary. When the feature flag is removed,
-                # there should only be one, which combines co-assignment and queuing.
-                # Eventually, special-casing root tasks might be removed entirely, with better heuristics.
-                if math.isinf(self.WORKER_SATURATION):
-                    if not (ws := self.decide_worker_rootish_queuing_disabled(ts)):
-                        return {ts.key: "no-worker"}, {}, {}
-                else:
-                    if not (ws := self.decide_worker_rootish_queuing_enabled()):
-                        return {ts.key: "queued"}, {}, {}
+            if ts.cogroup is not None:
+                decider = self.decide_worker_cogroup
             else:
-                if not (ws := self.decide_worker_non_rootish(ts)):
-                    return {ts.key: "no-worker"}, {}, {}
+                decider = self.decide_worker_non_rootish
 
+            if not (ws := decider(ts)):
+                return {ts.key: "no-worker"}, {}, {}
             worker_msgs = _add_to_processing(self, ts, ws)
             return {}, {}, worker_msgs
         except Exception as e:
@@ -4573,7 +4603,21 @@ class Scheduler(SchedulerState, ServerNode):
         # Compute recommendations
         recommendations: dict = {}
 
-        for ts in sorted(runnables, key=operator.attrgetter("priority"), reverse=True):
+        sorted_tasks = sorted(
+            runnables, key=operator.attrgetter("priority"), reverse=True
+        )
+
+        if self.cogroups:
+            start = max(self.cogroups.keys()) + 1
+        else:
+            start = 0
+        cogroups = coassignment_groups(sorted_tasks[::-1], start=start)
+        self.cogroups.update(cogroups)
+        for gr_ix, tss in self.cogroups.items():
+            for ts in tss:
+                ts.cogroup = gr_ix
+
+        for ts in sorted_tasks:
             if ts.state == "released" and ts.run_spec:
                 recommendations[ts.key] = "waiting"
 
@@ -8414,3 +8458,60 @@ class CollectTaskMetaDataPlugin(SchedulerPlugin):
                 self.metadata[key] = ts.metadata
                 self.state[key] = finish
                 self.keys.discard(key)
+
+
+def coassignment_groups(
+    tasks: Sequence[TaskState], start: int = 0
+) -> dict[int, set[TaskState]]:
+    groups = {}
+    group = start
+    ix = 0
+    min_prio = None
+    max_prio = None
+
+    group_dependents_seen = set()
+    while ix < len(tasks):
+        current = tasks[ix]
+        if min_prio is None:
+            min_prio = ix
+
+        if current in group_dependents_seen or not current.dependents:
+            min_prio = None
+            max_prio = None
+            ix += 1
+            continue
+        # There is a way to implement this faster by just continuing to iterate
+        # over ix and check if the next is a dependent or not. I chose to go
+        # this route because this is what we wrote down initially
+        next = min(current.dependents, key=lambda ts: ts.priority)
+        next_ix = ix
+        while tasks[next_ix] is not next:
+            next_ix += 1
+
+        # Detect a jump
+        if next_ix != ix + 1:
+            while len(next.dependents) == 1:
+                (dep,) = next.dependents
+                if len(dep.dependencies) != 1:
+                    # This algorithm has the shortcoming that groups may grow
+                    # too large if we walk straight to the dependent of a group.
+                    # Especially in staged reductions (e.g. tree reductions, the
+                    # next "jump" would combine multiple cogroups). For now,
+                    # just ignore these. This means that we'll practically only
+                    # have cogroups at the bottom of a graph but this is where
+                    # it matters the most anyhow
+                    group_dependents_seen.add(dep)
+                    break
+                next = dep
+            while tasks[next_ix] is not next:
+                next_ix += 1
+            max_prio = next_ix + 1
+            groups[group] = set(tasks[min_prio:max_prio])
+            group += 1
+            ix = max_prio
+            min_prio = None
+            max_prio = None
+        else:
+            ix = next_ix
+
+    return groups
