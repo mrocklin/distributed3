@@ -843,7 +843,7 @@ class Server:
                                 handler(**merge(extra, msg))
                         else:
                             logger.error("odd message %s", msg)
-                    await asyncio.sleep(0)
+                        await asyncio.sleep(0)
 
         except OSError:
             pass
