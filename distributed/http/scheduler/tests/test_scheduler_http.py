@@ -110,7 +110,7 @@ async def test_prometheus(c, s, a, b):
         "dask_scheduler_tasks",
         "dask_scheduler_tasks_suspicious",
         "dask_scheduler_tasks_forgotten",
-        "dask_scheduler_prefix_state_totals",
+        "dask_scheduler_prefix_state",
         "dask_scheduler_tick_count",
         "dask_scheduler_tick_duration_maximum_seconds",
     }
@@ -215,7 +215,7 @@ async def test_prometheus_collect_task_prefix_counts(c, s, a, b):
 
         prefix_state_counts = {
             (sample.labels["task_prefix_name"], sample.labels["state"]): sample.value
-            for sample in families["dask_scheduler_prefix_state_totals"].samples
+            for sample in families["dask_scheduler_prefix_state"].samples
         }
 
         return prefix_state_counts

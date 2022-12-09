@@ -18,7 +18,7 @@ async def test_prometheus(c, s, a, b):
         "dask_semaphore_pending_leases",
         "dask_semaphore_acquire",
         "dask_semaphore_release",
-        "dask_semaphore_average_pending_lease_time_s",
+        "dask_semaphore_average_pending_lease_time_seconds",
     }
 
     assert active_metrics.keys() == expected_metrics
@@ -45,7 +45,9 @@ async def test_prometheus(c, s, a, b):
     assert active_metrics["dask_semaphore_max_leases"].samples[0].value == 2
     assert active_metrics["dask_semaphore_active_leases"].samples[0].value == 1
     assert (
-        active_metrics["dask_semaphore_average_pending_lease_time_s"].samples[0].value
+        active_metrics["dask_semaphore_average_pending_lease_time_seconds"]
+        .samples[0]
+        .value
         > 0
     )
     assert active_metrics["dask_semaphore_acquire"].samples[0].value == 1
@@ -57,7 +59,9 @@ async def test_prometheus(c, s, a, b):
     assert active_metrics["dask_semaphore_max_leases"].samples[0].value == 2
     assert active_metrics["dask_semaphore_active_leases"].samples[0].value == 0
     assert (
-        active_metrics["dask_semaphore_average_pending_lease_time_s"].samples[0].value
+        active_metrics["dask_semaphore_average_pending_lease_time_seconds"]
+        .samples[0]
+        .value
         > 0
     )
     assert active_metrics["dask_semaphore_acquire"].samples[0].value == 1

@@ -49,7 +49,7 @@ class SemaphoreMetricCollector(PrometheusCollector):
         )
 
         semaphore_average_pending_lease_time = GaugeMetricFamily(
-            self.build_name("average_pending_lease_time"),
+            self.build_name("average_pending_lease_time_seconds"),
             "Exponential moving average of the time it took to acquire a lease "
             "per semaphore\n"
             "Note: This only includes time spent on scheduler side, "
@@ -57,7 +57,6 @@ class SemaphoreMetricCollector(PrometheusCollector):
             "Note: This average is calculated based on order of leases instead "
             "of time of lease acquisition.",
             labels=["name"],
-            unit="s",
         )
 
         for semaphore_name, semaphore_max_leases in sem_ext.max_leases.items():
