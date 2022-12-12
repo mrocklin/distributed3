@@ -297,24 +297,45 @@ async def test_worker_client_rejoins(c, s, a, b):
     assert result
 
 
-@pytest.mark.xfail(
-    reason="Flaky due to https://github.com/dask/distributed/issues/5915"
+@pytest.mark.parametrize("pass_addr_get_client", [True, False])
+@pytest.mark.parametrize(
+    "scheduler_addr_fact",
+    [
+        lambda s: s.address,
+        pytest.param(
+            lambda s: "localhost:" + s.address.split(":")[-1],
+            marks=pytest.mark.xfail(
+                reason="Flaky due to https://github.com/dask/distributed/issues/5915"
+            ),
+        ),
+    ],
 )
 @gen_cluster()
-async def test_submit_different_names(s, a, b):
+async def test_submit_different_names(
+    s, a, b, scheduler_addr_fact, pass_addr_get_client
+):
     # https://github.com/dask/distributed/issues/2058
-    da = pytest.importorskip("dask.array")
-    c = await Client(
-        "localhost:" + s.address.split(":")[-1], loop=s.loop, asynchronous=True
-    )
-    try:
-        X = c.persist(da.random.uniform(size=(100, 10), chunks=50))
-        await wait(X)
+    s_addr = scheduler_addr_fact(s)
+    async with Client(
+        s_addr,
+        loop=s.loop,
+        asynchronous=True,
+        name="test-localhost",
+    ) as c:
+        assert c.asynchronous is True
 
-        fut = await c.submit(lambda x: x.sum().compute(), X)
-        assert fut > 0
-    finally:
-        await c.close()
+        def in_threadpool(x):
+            c_inner = get_client(s_addr if pass_addr_get_client else None)
+            assert c_inner.asynchronous is False
+            assert c_inner.status == "running"
+            assert len(Client._instances) == 1
+
+        assert c.asynchronous is True
+        # Ensure that we're scheduling on both workers, regardless of scheduling
+        # heuristics
+        futsA = c.map(in_threadpool, range(5), workers=[a.address])
+        futsB = c.map(in_threadpool, range(5, 10), workers=[b.address])
+        await c.gather(futsA + futsB)
 
 
 @gen_cluster(client=True)

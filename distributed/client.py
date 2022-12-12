@@ -50,6 +50,8 @@ try:
     from dask.delayed import single_key
 except ImportError:
     single_key = first
+from typing import Generator
+
 from tornado import gen
 from tornado.ioloop import IOLoop
 
@@ -110,11 +112,6 @@ from distributed.worker import get_client, get_worker, secede
 
 logger = logging.getLogger(__name__)
 
-_global_clients: weakref.WeakValueDictionary[
-    int, Client
-] = weakref.WeakValueDictionary()
-_global_client_index = [0]
-
 _current_client = ContextVar("_current_client", default=None)
 
 DEFAULT_EXTENSIONS = {
@@ -122,30 +119,64 @@ DEFAULT_EXTENSIONS = {
 }
 
 
-def _get_global_client() -> Client | None:
-    L = sorted(list(_global_clients), reverse=True)
-    for k in L:
-        c = _global_clients[k]
-        if c.status != "closed":
-            return c
-        else:
-            del _global_clients[k]
-    return None
+class _GlobalClientManager:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._global_clients: weakref.WeakValueDictionary[
+            int, Client
+        ] = weakref.WeakValueDictionary()
+        self._global_client_index = 0
+        self._set = None
+
+    def _get_global_client(self) -> Client | None:
+        with self._lock:
+            L = sorted(self._global_clients, reverse=True)
+            for k in L:
+                return self._global_clients[k]
+            return None
+
+    def _set_global_client(self, c: Client) -> None:
+        with self._lock:
+            if not self._set:
+                self._set = dask.config.set(
+                    scheduler="dask.distributed", shuffle="tasks"
+                )
+            self._global_clients[self._global_client_index] = c
+            self._global_client_index += 1
+
+    def _del_global_client(self, c: Client) -> None:
+        with self._lock:
+            for k in list(self._global_clients):
+                try:
+                    if self._global_clients[k] is c:
+                        del self._global_clients[k]
+                except KeyError:  # pragma: no cover
+                    pass
+
+            if not self._global_clients and self._set:
+                self._set.__exit__(None, None, None)
+                self._set = None
+
+    def clear(self):
+        with self._lock:
+            self._global_clients.clear()
+            self._global_client_index = 0
+
+    def close(self, timeout=3):
+        while c := self._get_global_client():
+            if c.asynchronous:
+                c.loop.add_callback(c.close, timeout=timeout)
+            else:
+                c.close(timeout=timeout)
 
 
-def _set_global_client(c: Client | None) -> None:
-    if c is not None:
-        _global_clients[_global_client_index[0]] = c
-        _global_client_index[0] += 1
+_global_client_manager = _GlobalClientManager()
+_set_global_client = _global_client_manager._set_global_client
+_get_global_client = _global_client_manager._get_global_client
+_del_global_client = _global_client_manager._del_global_client
 
 
-def _del_global_client(c: Client) -> None:
-    for k in list(_global_clients):
-        try:
-            if _global_clients[k] is c:
-                del _global_clients[k]
-        except KeyError:  # pragma: no cover
-            pass
+atexit.register(_global_client_manager.close)
 
 
 class Future(WrappedKey):
@@ -189,11 +220,17 @@ class Future(WrappedKey):
     _cb_executor = None
     _cb_executor_pid = None
 
-    def __init__(self, key, client=None, inform=True, state=None):
+    def __init__(
+        self,
+        key: str | tuple,
+        client: Client,
+        inform: bool = True,
+        state: FutureState | None = None,
+    ):
         self.key = key
         self._cleared = False
         tkey = stringify(key)
-        self.client = client or Client.current()
+        self.client = client
         self.client._inc_ref(tkey)
         self._generation = self.client.generation
 
@@ -944,10 +981,6 @@ class Client(SyncMethodMixin):
 
         self._start_arg = address
         self._set_as_default = set_as_default
-        if set_as_default:
-            self._set_config = dask.config.set(
-                scheduler="dask.distributed", shuffle="tasks"
-            )
         self._event_handlers = {}
 
         self._stream_handlers = {
@@ -1176,8 +1209,6 @@ class Client(SyncMethodMixin):
             return
 
         self._loop_runner.start()
-        if self._set_as_default:
-            _set_global_client(self)
 
         if self.asynchronous:
             self._started = asyncio.ensure_future(self._start(**kwargs))
@@ -1215,6 +1246,8 @@ class Client(SyncMethodMixin):
 
     async def _start(self, timeout=no_default, **kwargs):
         self.status = "connecting"
+        if self._set_as_default:
+            _set_global_client(self)
 
         await self.rpc.start()
 
@@ -1599,6 +1632,8 @@ class Client(SyncMethodMixin):
             return
 
         self.status = "closing"
+        if self._set_as_default:
+            _del_global_client(self)
 
         for preload in self.preloads:
             await preload.teardown()
@@ -1608,14 +1643,7 @@ class Client(SyncMethodMixin):
                 pc.stop()
 
         with log_errors():
-            _del_global_client(self)
             self._scheduler_identity = {}
-            with suppress(AttributeError):
-                # clear the dask.config set keys
-                with self._set_config:
-                    pass
-            if self.get == dask.config.get("get", None):
-                del dask.config.config["get"]
 
             if (
                 self.scheduler_comm
@@ -1653,9 +1681,6 @@ class Client(SyncMethodMixin):
             await self.rpc.close()
 
             self.status = "closed"
-
-            if _get_global_client() is self:
-                _set_global_client(None)
 
             if (
                 handle_report_task is not None
@@ -5182,7 +5207,7 @@ def AsCompleted(*args, **kwargs):
     raise Exception("This has moved to as_completed")
 
 
-def default_client(c=None):
+def default_client(c: Client | None = None) -> Client:
     """Return a client if one has started
 
     Parameters
@@ -5207,7 +5232,7 @@ def default_client(c=None):
         )
 
 
-def ensure_default_client(client):
+def ensure_default_client(client: Client) -> None:
     """Ensures the client passed as argument is set as the default
 
     Parameters
@@ -5215,7 +5240,7 @@ def ensure_default_client(client):
     client : Client
         The client
     """
-    dask.config.set(scheduler="dask.distributed")
+    client._set_as_default = True
     _set_global_client(client)
 
 
@@ -5518,7 +5543,7 @@ class get_task_metadata:
 
 
 @contextmanager
-def temp_default_client(c):
+def temp_default_client(c: Client) -> Generator[None, None, None]:
     """Set the default client for the duration of the context
 
     .. note::
@@ -5541,21 +5566,3 @@ def temp_default_client(c):
         yield
     finally:
         _set_global_client(old_exec)
-
-
-def _close_global_client():
-    """
-    Force close of global client.  This cleans up when a client
-    wasn't close explicitly, e.g. interactive sessions.
-    """
-    c = _get_global_client()
-    if c is not None:
-        c._should_close_loop = False
-        with suppress(TimeoutError, RuntimeError):
-            if c.asynchronous:
-                c.loop.add_callback(c.close, timeout=3)
-            else:
-                c.close(timeout=3)
-
-
-atexit.register(_close_global_client)

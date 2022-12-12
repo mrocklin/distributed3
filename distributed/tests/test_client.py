@@ -120,6 +120,37 @@ from distributed.utils_test import (
 pytestmark = pytest.mark.ci1
 
 
+@contextmanager
+def _ensure_no_global_client_state_left():
+    assert _get_global_client() is None
+    assert dask.base.get_scheduler() is None
+    assert dask.config.get("shuffle", None) is None
+    assert dask.config.get("scheduler", None) is None
+
+    yield
+    assert _get_global_client() is None
+    try:
+        assert dask.config.get("shuffle", None) is None
+        assert dask.config.get("scheduler", None) is None
+    except AssertionError:
+        dask.config.config.pop("shuffle", None)
+        dask.config.config.pop("scheduler", None)
+        raise
+    assert dask.base.get_scheduler() is None
+
+
+@pytest.fixture(autouse=True)
+def ensure_no_global_clients_are_leaking():
+    with _ensure_no_global_client_state_left():
+        yield
+
+
+def test_modify_global_state_raises():
+    with pytest.raises(AssertionError):
+        with _ensure_no_global_client_state_left():
+            dask.config.config["scheduler"] = "test-value"
+
+
 @gen_cluster(client=True)
 async def test_submit(c, s, a, b):
     x = c.submit(inc, 10, key="x")
@@ -3365,11 +3396,75 @@ def test_default_get(loop_in_thread):
         assert dask.base.get_scheduler() == pre_get
 
 
+@gen_cluster(nthreads=[])
+async def test_default_global_client_multi_clients(s):
+    pre_get = dask.base.get_scheduler()
+    assert _get_global_client() is None
+    pytest.raises(KeyError, dask.config.get, "shuffle")
+
+    async with Client(s.address, asynchronous=True) as c:
+        assert dask.base.get_scheduler() == c.get
+        assert dask.config.get("shuffle") == "tasks"
+        assert dask.config.get("scheduler") == "dask.distributed"
+
+        async with Client(s.address, asynchronous=True) as d:
+            assert dask.base.get_scheduler() == d.get
+
+        assert dask.base.get_scheduler() == c.get
+
+    assert dask.base.get_scheduler() is None
+
+    assert _get_global_client() is None
+    c = await Client(s.address, asynchronous=True)
+
+    assert dask.base.get_scheduler() == c.get
+    assert dask.config.get("shuffle") == "tasks"
+    assert dask.config.get("scheduler") == "dask.distributed"
+
+    d = await Client(s.address, asynchronous=True)
+
+    assert dask.base.get_scheduler() == d.get
+    assert dask.config.get("shuffle") == "tasks"
+    assert dask.config.get("scheduler") == "dask.distributed"
+
+    await c.close()
+
+    assert dask.base.get_scheduler() == d.get
+    assert dask.config.get("shuffle") == "tasks"
+    assert dask.config.get("scheduler") == "dask.distributed"
+    await d.close()
+
+    assert dask.config.get("shuffle", None) is None
+    assert dask.config.get("scheduler", None) is None
+    assert dask.base.get_scheduler() is None
+
+    c = await Client(s.address, asynchronous=True)
+
+    assert dask.base.get_scheduler() == c.get
+    assert dask.config.get("shuffle") == "tasks"
+    assert dask.config.get("scheduler") == "dask.distributed"
+
+    non_default = await Client(s.address, asynchronous=True, set_as_default=False)
+
+    assert dask.base.get_scheduler() == c.get
+    assert dask.config.get("shuffle") == "tasks"
+    assert dask.config.get("scheduler") == "dask.distributed"
+
+    await c.close()
+
+    assert dask.config.get("shuffle", None) is None
+    assert dask.config.get("scheduler", None) is None
+    assert dask.base.get_scheduler() is None
+    await d.close()
+
+
 @gen_cluster(client=True)
 async def test_ensure_default_client(c, s, a, b):
     assert c is default_client()
 
-    async with Client(s.address, set_as_default=False, asynchronous=True) as c2:
+    async with Client(
+        s.address, set_as_default=False, asynchronous=True, name="c2"
+    ) as c2:
         assert c is default_client()
         assert c2 is not default_client()
         ensure_default_client(c2)
@@ -5590,15 +5685,6 @@ async def test_client_with_name(s, a, b):
 
     text = sio.getvalue()
     assert "foo" in text
-
-
-@gen_cluster(client=True)
-async def test_future_defaults_to_default_client(c, s, a, b):
-    x = c.submit(inc, 1)
-    await wait(x)
-
-    future = Future(x.key)
-    assert future.client is c
 
 
 @gen_cluster(client=True)

@@ -42,7 +42,7 @@ from dask.sizeof import sizeof
 from distributed import Event, Scheduler, system
 from distributed import versions as version_module
 from distributed.batched import BatchedSend
-from distributed.client import Client, _global_clients, default_client
+from distributed.client import Client, _global_client_manager, default_client
 from distributed.comm import Comm
 from distributed.comm.tcp import TCP
 from distributed.compatibility import MACOS, WINDOWS
@@ -1055,7 +1055,9 @@ def gen_cluster(
 
                     def get_unclosed():
                         return [c for c in Comm._instances if not c.closed()] + [
-                            c for c in _global_clients.values() if c.status != "closed"
+                            c
+                            for c in _global_client_manager._global_clients.values()
+                            if c.status != "closed"
                         ]
 
                     try:
@@ -1072,7 +1074,7 @@ def gen_cluster(
                                 raise RuntimeError("Unclosed Comms", get_unclosed())
                     finally:
                         Comm._instances.clear()
-                        _global_clients.clear()
+                        _global_client_manager.clear()
 
                         for w in workers:
                             if getattr(w, "data", None):
@@ -1716,17 +1718,17 @@ def check_instances():
     SchedulerTaskState._instances.clear()
     WorkerTaskState._instances.clear()
     Nanny._instances.clear()
-    _global_clients.clear()
+    _global_client_manager.clear()
     Comm._instances.clear()
 
     yield
 
     start = time()
-    while set(_global_clients):
+    while _global_client_manager._get_global_client():
         sleep(0.1)
         assert time() < start + 10
 
-    _global_clients.clear()
+    _global_client_manager.clear()
 
     for w in Worker._instances:
         with suppress(RuntimeError):  # closed IOLoop
