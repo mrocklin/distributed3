@@ -54,6 +54,7 @@ from distributed.diagnostics.plugin import (
 from distributed.metrics import time
 from distributed.protocol import pickle
 from distributed.scheduler import KilledWorker, Scheduler
+from distributed.utils import open_port
 from distributed.utils_test import (
     NO_AMM,
     BlockedExecute,
@@ -349,18 +350,21 @@ async def test_worker_port_range(s):
 @pytest.mark.slow
 @gen_test(timeout=60)
 async def test_worker_waits_for_scheduler():
-    w = Worker("127.0.0.1:8724")
+    port = open_port()
+    w = Worker(f"127.0.0.1:{port}")
 
     async def f():
-        await w
+        async with w:
+            pass
 
     task = asyncio.create_task(f())
     await asyncio.sleep(3)
     assert not task.done()
-    task.cancel()
 
     assert w.status not in (Status.closed, Status.running, Status.paused)
-    await w.close(timeout=0.1)
+
+    async with Scheduler(port=port):
+        await task
 
 
 @gen_cluster(client=True, nthreads=[("127.0.0.1", 1)])

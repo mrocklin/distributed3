@@ -26,7 +26,7 @@ from dask.utils import tmpfile
 
 from distributed import Nanny, Scheduler, Worker, profile, rpc, wait, worker
 from distributed.compatibility import LINUX, WINDOWS
-from distributed.core import CommClosedError, Status
+from distributed.core import CommClosedError, ConnectionPool, Status
 from distributed.diagnostics import SchedulerPlugin
 from distributed.metrics import time
 from distributed.protocol.pickle import dumps
@@ -543,8 +543,33 @@ async def test_worker_start_exception(s):
     # ^ NOTE: `Nanny.close` sets it to `closed`, then `Server.start._close_on_failure` sets it to `failed`
     assert nanny.process is None
     assert "Restarting worker" not in logs.getvalue()
-    # Avoid excessive spewing. (It's also printed once extra within the subprocess, which is okay.)
-    assert logs.getvalue().count("ValueError: broken") == 1, logs.getvalue()
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "kill",
+        "restart",
+    ],
+)
+@gen_cluster(nthreads=[])
+async def test_worker_start_exception_after_restart(s, api):
+    async with Nanny(s.address, death_timeout="5s") as nanny:
+        # Stop the listener on the scheduler, i.e. do not allow any new incoming
+        # connections. The restarting workers will fail while trying to attempt
+        # connection
+        s.stop()
+        if api == "kill":
+            # Kill is not immediately restarting the process and is therefore
+            # not raising an exception and we need to wait
+            await nanny.kill()
+            await nanny.finished()
+        else:
+            # something is failing, we do not care too much what exactly
+            with pytest.raises(Exception):
+                await nanny.restart()
+            await nanny.finished()
+        assert nanny.status == Status.closed
 
 
 @gen_cluster(nthreads=[])
@@ -760,3 +785,27 @@ async def test_worker_inherits_temp_config(c, s):
         async with Nanny(s.address):
             out = await c.submit(lambda: dask.config.get("test123"))
             assert out == 123
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("api", ["restart", "kill"])
+@gen_cluster(client=True, nthreads=[("", 1)], Worker=Nanny)
+async def test_restart_stress(c, s, a, api):
+    async def keep_killing():
+        pool = await ConnectionPool()
+        try:
+            rpc = pool(a.address)
+            for _ in range(2):
+                try:
+                    meth = getattr(rpc, api)
+                    await meth(reason="scheduler-restart")
+                except OSError:
+                    break
+
+                await asyncio.sleep(0.1)
+        finally:
+            await pool.close()
+
+    kill_tasks = [asyncio.create_task(keep_killing()) for _ in range(2)]
+    await asyncio.gather(*kill_tasks)
+    assert a.status == Status.running

@@ -3917,7 +3917,9 @@ class Scheduler(SchedulerState, ServerNode):
         await asyncio.gather(
             *[log_errors(plugin.before_close) for plugin in list(self.plugins.values())]
         )
-
+        # Make sure we're not colliding with the startup coro when setting the
+        # status to closing
+        await self.started()
         self.status = Status.closing
 
         logger.info("Scheduler closing...")

@@ -349,6 +349,7 @@ class Server:
         self.counters = None
         self._ongoing_background_tasks = AsyncTaskGroup()
         self._event_finished = asyncio.Event()
+        self._event_started = asyncio.Event()
 
         self.listeners = []
         self.io_loop = self.loop = IOLoop.current()
@@ -422,6 +423,7 @@ class Server:
         self.io_loop.add_callback(set_thread_ident)
         self._startup_lock = asyncio.Lock()
         self.__startup_exc = None
+        self.__startup_task = None
 
         self.rpc = ConnectionPool(
             limit=connection_limit,
@@ -493,8 +495,16 @@ class Server:
         """Wait until the server has finished"""
         await self._event_finished.wait()
 
+    async def started(self):
+        await self._event_started.wait()
+
     def __await__(self):
         return self.start().__await__()
+
+    async def cancel_start(self):
+        if self.__startup_task:
+            self.__startup_task.cancel()
+            await self.started()
 
     async def start_unsafe(self):
         """Attempt to start the server. This is not idempotent and not protected against concurrent startup attempts.
@@ -511,30 +521,35 @@ class Server:
 
     @final
     async def start(self):
-        async with self._startup_lock:
-            if self.status == Status.failed:
-                assert self.__startup_exc is not None
-                raise self.__startup_exc
-            elif self.status != Status.init:
-                return self
-            timeout = getattr(self, "death_timeout", None)
+        if self.status == Status.failed:
+            assert self.__startup_exc is not None
+            raise self.__startup_exc
+        elif self.status != Status.init:
+            return self
 
-            async def _close_on_failure(exc: Exception) -> None:
-                await self.close()
-                self.status = Status.failed
-                self.__startup_exc = exc
+        async def _close_on_failure(exc: Exception) -> None:
+            self._event_started.set()
+            await self.close()
+            self.status = Status.failed
+            self.__startup_exc = exc
 
-            try:
-                await asyncio.wait_for(self.start_unsafe(), timeout=timeout)
-            except asyncio.TimeoutError as exc:
-                await _close_on_failure(exc)
-                raise asyncio.TimeoutError(
-                    f"{type(self).__name__} start timed out after {timeout}s."
-                ) from exc
-            except Exception as exc:
-                await _close_on_failure(exc)
-                raise RuntimeError(f"{type(self).__name__} failed to start.") from exc
-            self.status = Status.running
+        timeout = getattr(self, "death_timeout", None)
+        try:
+            async with self._startup_lock:
+                self.__startup_task = asyncio.create_task(self.start_unsafe())
+                self.__startup_task.add_done_callback(
+                    lambda _: self._event_started.set()
+                )
+                await asyncio.wait_for(self.__startup_task, timeout=timeout)
+                self.status = Status.running
+        except asyncio.TimeoutError as exc:
+            await _close_on_failure(exc)
+            raise asyncio.TimeoutError(
+                f"{type(self).__name__} start timed out after {timeout}s."
+            ) from exc
+        except Exception as exc:
+            await _close_on_failure(exc)
+            raise RuntimeError(f"{type(self).__name__} failed to start.") from exc
         return self
 
     async def __aenter__(self):
@@ -743,7 +758,7 @@ class Server:
         logger.debug("Connection from %r to %s", address, type(self).__name__)
         self._comms[comm] = op
 
-        await self
+        await self.started()
         try:
             while not self.__stopped:
                 try:
@@ -942,6 +957,9 @@ class Server:
             await asyncio.gather(*[comm.close() for comm in list(self._comms)])
         finally:
             self._event_finished.set()
+            logger.debug(
+                f"Closed {type(self).__name__} - {self.address_safe} - {self.id}"
+            )
 
     def digest_metric(self, name: str, value: float) -> None:
         # Granular data (requires crick)
