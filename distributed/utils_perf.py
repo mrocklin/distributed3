@@ -181,6 +181,10 @@ class GCDiagnosis:
         # don't waste time measuring them
         if info["generation"] != 2:
             return
+        if phase == "stop":
+            # Stop timer before measuring RSS to avoid this influencing the
+            # measurement
+            self._fractional_timer.stop_timing()
         if self._proc is not None:
             rss = self._proc.memory_info().rss
         else:
@@ -190,7 +194,6 @@ class GCDiagnosis:
             self._gc_rss_before = rss
             return
         assert phase == "stop"
-        self._fractional_timer.stop_timing()
         frac = self._fractional_timer.running_fraction
         if frac is not None and frac >= self._warn_over_frac:
             logger.warning(
