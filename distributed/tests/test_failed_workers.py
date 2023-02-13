@@ -249,7 +249,7 @@ async def test_forgotten_futures_dont_clean_up_new_futures(c, s, a, b):
 
 @pytest.mark.slow
 @pytest.mark.flaky(condition=MACOS, reruns=10, reruns_delay=5)
-@gen_cluster(client=True, timeout=60, active_rpc_timeout=10)
+@gen_cluster(client=True, timeout=60)
 async def test_broken_worker_during_computation(c, s, a, b):
     s.allowed_failures = 100
     async with Nanny(s.address, nthreads=2) as n:

@@ -18,7 +18,7 @@ import dask
 from dask.utils import parse_bytes, parse_timedelta
 from dask.widgets import get_template
 
-from distributed.core import Status, rpc
+from distributed.core import ConnectionPool, Status
 from distributed.deploy.adaptive import Adaptive
 from distributed.deploy.cluster import Cluster
 from distributed.scheduler import Scheduler
@@ -309,8 +309,10 @@ class SpecCluster(Cluster):
             else:
                 options = {"dashboard": True}
             self.scheduler_spec = {"cls": Scheduler, "options": options}
-
         try:
+            self.pool = await ConnectionPool(
+                connection_args=self.security.get_connection_args("client")
+            )
             # Check if scheduler has already been created by a subclass
             if self.scheduler is None:
                 cls = self.scheduler_spec["cls"]
@@ -318,10 +320,9 @@ class SpecCluster(Cluster):
                     cls = import_term(cls)
                 self.scheduler = cls(**self.scheduler_spec.get("options", {}))
                 self.scheduler = await self.scheduler
-            self.scheduler_comm = rpc(
+            self.scheduler_comm = self.pool(
                 getattr(self.scheduler, "external_address", None)
                 or self.scheduler.address,
-                connection_args=self.security.get_connection_args("client"),
             )
             await super()._start()
         except Exception as e:  # pragma: no cover
@@ -443,9 +444,7 @@ class SpecCluster(Cluster):
 
             if self.scheduler_comm:
                 async with self._lock:
-                    with suppress(OSError):
-                        await self.scheduler_comm.terminate()
-                    await self.scheduler_comm.close_rpc()
+                    await self.scheduler_comm.close()
             else:
                 logger.warning("Cluster closed without starting up")
 

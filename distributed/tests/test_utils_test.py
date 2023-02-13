@@ -25,7 +25,7 @@ from distributed import Client, Event, Nanny, Scheduler, Worker, config, default
 from distributed.batched import BatchedSend
 from distributed.comm.core import connect
 from distributed.compatibility import WINDOWS
-from distributed.core import Server, Status, rpc
+from distributed.core import ConnectionPool, Server, Status
 from distributed.metrics import time
 from distributed.tests.test_batched import EchoServer
 from distributed.utils import get_mp_context
@@ -68,8 +68,9 @@ def test_bare_cluster(loop):
 
 def test_cluster(cleanup):
     async def identity():
-        async with rpc(s["address"]) as scheduler_rpc:
-            return await scheduler_rpc.identity()
+        async with ConnectionPool() as rpc:
+            async with rpc(s["address"]) as scheduler_rpc:
+                return await scheduler_rpc.identity()
 
     with cluster() as (s, [a, b]):
         ident = asyncio.run(identity())

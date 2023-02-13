@@ -43,7 +43,7 @@ from distributed import (
 )
 from distributed.comm.registry import backends
 from distributed.compatibility import LINUX, WINDOWS, to_thread
-from distributed.core import CommClosedError, Status, rpc
+from distributed.core import CommClosedError, ConnectionPool, Status
 from distributed.diagnostics import nvml
 from distributed.diagnostics.plugin import (
     CondaInstall,
@@ -196,12 +196,12 @@ async def test_upload_file(c, s, a, b):
     assert not os.path.exists(os.path.join(a.local_directory, "foobar.py"))
     assert not os.path.exists(os.path.join(b.local_directory, "foobar.py"))
     assert a.local_directory != b.local_directory
-
-    async with rpc(a.address) as aa, rpc(b.address) as bb:
-        await asyncio.gather(
-            aa.upload_file(filename="foobar.py", data=b"x = 123"),
-            bb.upload_file(filename="foobar.py", data="x = 123"),
-        )
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa, rpc(b.address) as bb:
+            await asyncio.gather(
+                aa.upload_file(filename="foobar.py", data=b"x = 123"),
+                bb.upload_file(filename="foobar.py", data="x = 123"),
+            )
 
     assert os.path.exists(os.path.join(a.local_directory, "foobar.py"))
     assert os.path.exists(os.path.join(b.local_directory, "foobar.py"))
@@ -311,18 +311,20 @@ async def test_upload_pyz(c, s, a, b):
 @gen_cluster(client=True)
 async def test_upload_large_file(c, s, a, b):
     pytest.importorskip("crick")
-    await asyncio.sleep(0.05)
-    async with rpc(a.address) as aa:
-        await aa.upload_file(filename="myfile.dat", data=b"0" * 100000000)
-        await asyncio.sleep(0.05)
-        assert a.digests["tick-duration"].components[0].max() < 0.050
+
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa:
+            await aa.upload_file(filename="myfile.dat", data=b"0" * 100000000)
+            await asyncio.sleep(0.05)
+            assert a.digests["tick-duration"].components[0].max() < 0.050
 
 
 @gen_cluster()
 async def test_broadcast(s, a, b):
-    async with rpc(s.address) as cc:
-        results = await cc.broadcast(msg={"op": "ping"})
-        assert results == {a.address: b"pong", b.address: b"pong"}
+    async with ConnectionPool() as rpc:
+        async with rpc(s.address) as cc:
+            results = await cc.broadcast(msg={"op": "ping"})
+            assert results == {a.address: b"pong", b.address: b"pong"}
 
 
 @gen_cluster(nthreads=[])
@@ -532,8 +534,10 @@ async def test_plugin_internal_exception():
 @gen_cluster(client=True)
 async def test_gather(c, s, a, b):
     x, y = await c.scatter(["x", "y"], workers=[b.address])
-    async with rpc(a.address) as aa:
-        resp = await aa.gather(who_has={x.key: [b.address], y.key: [b.address]})
+
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa:
+            resp = await aa.gather(who_has={x.key: [b.address], y.key: [b.address]})
 
     assert resp == {"status": "OK"}
     assert a.data[x.key] == b.data[x.key] == "x"
@@ -544,8 +548,10 @@ async def test_gather(c, s, a, b):
 async def test_gather_missing_keys(c, s, a, b):
     """A key is missing. Other keys are gathered successfully."""
     x = await c.scatter("x", workers=[b.address])
-    async with rpc(a.address) as aa:
-        resp = await aa.gather(who_has={x.key: [b.address], "y": [b.address]})
+
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa:
+            resp = await aa.gather(who_has={x.key: [b.address], "y": [b.address]})
 
     assert resp == {"status": "partial-fail", "keys": {"y": (b.address,)}}
     assert a.data[x.key] == b.data[x.key] == "x"
@@ -560,8 +566,9 @@ async def test_gather_missing_workers(c, s, a, b):
     bad_addr = "tcp://127.0.0.1:12345"
     x = await c.scatter("x", workers=[b.address])
 
-    async with rpc(a.address) as aa:
-        resp = await aa.gather(who_has={x.key: [b.address], "y": [bad_addr]})
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa:
+            resp = await aa.gather(who_has={x.key: [b.address], "y": [bad_addr]})
 
     assert resp == {"status": "partial-fail", "keys": {"y": (bad_addr,)}}
     assert a.data[x.key] == b.data[x.key] == "x"
@@ -578,8 +585,10 @@ async def test_gather_missing_workers_replicated(c, s, a, b, missing_first):
     bad_addr = "tcp://127.0.0.1:12345"
     # Order matters! Test both
     addrs = [bad_addr, b.address] if missing_first else [b.address, bad_addr]
-    async with rpc(a.address) as aa:
-        resp = await aa.gather(who_has={x.key: addrs})
+
+    async with ConnectionPool() as rpc:
+        async with rpc(a.address) as aa:
+            resp = await aa.gather(who_has={x.key: addrs})
     assert resp == {"status": "OK"}
     assert a.data[x.key] == b.data[x.key] == "x"
 

@@ -80,7 +80,7 @@ async def test_cancel_stress(c, s, *workers):
 def test_cancel_stress_sync(loop):
     da = pytest.importorskip("dask.array")
     x = da.random.random((50, 50), chunks=(2, 2))
-    with cluster(active_rpc_timeout=10) as (s, [a, b]):
+    with cluster() as (s, [a, b]):
         with Client(s["address"], loop=loop) as c:
             x = c.persist(x)
             y = (x.sum(axis=0) + x.sum(axis=1) + 1).std()

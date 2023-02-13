@@ -37,7 +37,7 @@ from distributed import (
 )
 from distributed.comm.addressing import parse_host_port
 from distributed.compatibility import LINUX, MACOS, WINDOWS, PeriodicCallback
-from distributed.core import ConnectionPool, Status, clean_exception, connect, rpc
+from distributed.core import ConnectionPool, Status, clean_exception, connect
 from distributed.metrics import time
 from distributed.protocol.pickle import dumps, loads
 from distributed.scheduler import KilledWorker, MemoryState, Scheduler, WorkerState
@@ -711,10 +711,11 @@ async def test_retire_workers_empty(s):
 
 @gen_cluster()
 async def test_server_listens_to_other_ops(s, a, b):
-    async with rpc(s.address) as r:
-        ident = await r.identity()
-        assert ident["type"] == "Scheduler"
-        assert ident["id"].lower().startswith("scheduler")
+    async with ConnectionPool() as rpc:
+        async with rpc(s.address) as r:
+            ident = await r.identity()
+            assert ident["type"] == "Scheduler"
+            assert ident["id"].lower().startswith("scheduler")
 
 
 @gen_cluster()

@@ -27,7 +27,6 @@ from distributed.core import (
     coerce_to_address,
     connect,
     pingpong,
-    rpc,
     send_recv,
 )
 from distributed.metrics import time
@@ -440,20 +439,19 @@ async def check_rpc(listen_addr, rpc_addr=None, listen_args=None, connection_arg
         await server.listen(listen_addr, **listen_args)
         if rpc_addr is None:
             rpc_addr = server.address
+        async with ConnectionPool() as rpc:
+            async with rpc(rpc_addr) as remote:
+                response = await remote.ping()
+                assert response == b"pong"
+                assert remote.comms
 
-        async with rpc(rpc_addr, connection_args=connection_args) as remote:
-            response = await remote.ping()
-            assert response == b"pong"
-            assert remote.comms
-
-            response = await remote.ping(close=True)
-            assert response == b"pong"
-            response = await remote.ping()
-            assert response == b"pong"
-
-        assert not remote.comms
-        assert remote.status == Status.closed
-        await asyncio.sleep(0)
+                response = await remote.ping(close=True)
+                assert response == b"pong"
+                response = await remote.ping()
+                assert response == b"pong"
+        rpc._validate()
+        assert not rpc.active
+        assert not rpc.open
 
 
 @gen_test()
@@ -486,12 +484,14 @@ async def test_rpc_inproc():
 
 @gen_test()
 async def test_rpc_inputs():
-    L = [rpc("127.0.0.1:8884"), rpc(("127.0.0.1", 8884)), rpc("tcp://127.0.0.1:8884")]
+    async with ConnectionPool() as rpc:
+        L = [
+            rpc("127.0.0.1:8884"),
+            rpc(("127.0.0.1", 8884)),
+            rpc("tcp://127.0.0.1:8884"),
+        ]
 
-    assert all(r.address == "tcp://127.0.0.1:8884" for r in L), L
-
-    for r in L:
-        await r.close_rpc()
+        assert all(r.address == "tcp://127.0.0.1:8884" for r in L), L
 
 
 async def check_rpc_message_lifetime(*listen_args):
@@ -509,7 +509,7 @@ async def check_rpc_message_lifetime(*listen_args):
             await asyncio.sleep(0.01)
             assert time() < start + 1
 
-        async with rpc(server.address) as remote:
+        async with ConnectionPool() as pool, pool(server.address) as remote:
             obj = CountedObject()
             res = await remote.echo(x=to_serialize(obj))
             assert isinstance(res["result"], CountedObject)
@@ -549,14 +549,14 @@ async def check_rpc_with_many_connections(listen_arg):
     server = await Server({"ping": pingpong})
     await server.listen(listen_arg)
 
-    async with rpc(server.address) as remote:
+    async with ConnectionPool() as pool, pool(server.address) as remote:
         for _ in range(10):
             await g()
 
         server.stop()
 
-        remote.close_comms()
-        assert all(comm.closed() for comm in remote.comms)
+    assert not pool.active
+    assert not pool.open
 
 
 @gen_test()
@@ -575,7 +575,7 @@ async def check_large_packets(listen_arg):
         await server.listen(listen_arg)
 
         data = b"0" * int(200e6)  # slightly more than 100MB
-        async with rpc(server.address) as conn:
+        async with ConnectionPool() as pool, pool(server.address) as conn:
             result = await conn.echo(data=data)
             assert result == data
 
@@ -599,7 +599,7 @@ async def check_identity(listen_arg):
     async with Server({}) as server:
         await server.listen(listen_arg)
 
-        async with rpc(server.address) as remote:
+        async with ConnectionPool() as pool, pool(server.address) as remote:
             a = await remote.identity()
             b = await remote.identity()
             assert a["type"] == "Server"
@@ -651,7 +651,7 @@ async def test_errors():
     async with Server({"div": stream_div}) as server:
         await server.listen(0)
 
-        async with rpc(("127.0.0.1", server.port)) as r:
+        async with ConnectionPool() as pool, pool(server.address) as r:
             with pytest.raises(ZeroDivisionError):
                 await r.div(x=1, y=0)
 
@@ -937,14 +937,14 @@ async def test_connection_pool_remove():
 
 @gen_test()
 async def test_counters():
-    async with Server({"div": stream_div}) as server:
+    async with Server({"div": stream_div}) as server, ConnectionPool() as pool:
         await server.listen("tcp://")
 
-        async with rpc(server.address) as r:
+        async with pool(server.address) as rpc:
             for _ in range(2):
-                await r.identity()
+                await rpc.identity()
             with pytest.raises(ZeroDivisionError):
-                await r.div(x=1, y=0)
+                await rpc.div(x=1, y=0)
 
             c = server.counters
             assert c["op"].components[0] == {"identity": 2, "div": 1}
@@ -982,10 +982,10 @@ async def test_tick_logging(s, a, b):
 @gen_test()
 async def test_compression(compression, serialize):
     with dask.config.set(compression=compression):
-        async with Server({"echo": serialize}) as server:
+        async with Server({"echo": serialize}) as server, ConnectionPool() as pool:
             await server.listen("tcp://")
 
-            async with rpc(server.address) as r:
+            async with pool(server.address) as r:
                 data = b"1" * 1000000
                 result = await r.echo(x=to_serialize(data))
                 assert result == {"result": data}
@@ -996,11 +996,15 @@ async def test_rpc_serialization():
     async with Server({"echo": echo_serialize}) as server:
         await server.listen("tcp://")
 
-        async with rpc(server.address, serializers=["msgpack"]) as r:
+        async with ConnectionPool(serializers=["msgpack"]) as pool, pool(
+            server.address
+        ) as r:
             with pytest.raises(TypeError):
                 await r.echo(x=to_serialize(inc))
 
-        async with rpc(server.address, serializers=["msgpack", "pickle"]) as r:
+        async with ConnectionPool(serializers=["msgpack", "pickle"]) as pool, pool(
+            server.address
+        ) as r:
             result = await r.echo(x=to_serialize(inc))
             assert result == {"result": inc}
 
@@ -1058,6 +1062,7 @@ async def test_connection_pool_detects_remote_close():
         await p.close()
 
 
+@pytest.mark.slow()
 @gen_test()
 async def test_close_properly():
     """
@@ -1087,9 +1092,9 @@ async def test_close_properly():
     # backends to close properly as well
     ip = get_ip()
     rpc_addr = f"tcp://{ip}:{ports[-1]}"
-    async with rpc(rpc_addr) as remote:
+    async with ConnectionPool() as pool, pool(rpc_addr) as remote:
 
-        comm = await remote.live_comm()
+        comm = await pool.connect(rpc_addr)
         await comm.write({"op": "sleep"})
         await sleep_started.wait()
 
@@ -1214,7 +1219,7 @@ async def test_close_fast_without_active_handlers(close_via_rpc):
         fut = server.close()
         await asyncio.wait_for(fut, 0.5)
     else:
-        async with rpc(server.address) as _rpc:
+        async with ConnectionPool() as pool, pool(server.address) as _rpc:
             fut = _rpc.terminate(reply=False)
             await asyncio.wait_for(fut, 0.5)
 

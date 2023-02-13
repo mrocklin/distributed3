@@ -66,7 +66,6 @@ from distributed.core import (
     Status,
     clean_exception,
     connect,
-    rpc,
 )
 from distributed.diagnostics.plugin import (
     NannyPlugin,
@@ -879,7 +878,7 @@ class Client(SyncMethodMixin):
         if address is not None and kwargs:
             raise ValueError(f"Unexpected keyword arguments: {sorted(kwargs)}")
 
-        if isinstance(address, (rpc, PooledRPCCall)):
+        if isinstance(address, PooledRPCCall):
             self.scheduler = address
         elif isinstance(getattr(address, "scheduler_address", None), str):
             # It's a LocalCluster or LocalCluster-compatible object
@@ -1671,9 +1670,8 @@ class Client(SyncMethodMixin):
 
                 if _get_global_client() is self:
                     _set_global_client(None)
-
-            with suppress(AttributeError):
-                await self.scheduler.close_rpc()
+            if self.scheduler:
+                await self.scheduler.close()
 
             self.scheduler = None
 

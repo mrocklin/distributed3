@@ -24,9 +24,9 @@ from tornado.ioloop import IOLoop
 import dask
 from dask.utils import tmpfile
 
-from distributed import Nanny, Scheduler, Worker, profile, rpc, wait, worker
+from distributed import Nanny, Scheduler, Worker, profile, wait, worker
 from distributed.compatibility import LINUX, WINDOWS
-from distributed.core import CommClosedError, Status
+from distributed.core import CommClosedError, ConnectionPool, Status
 from distributed.diagnostics import SchedulerPlugin
 from distributed.metrics import time
 from distributed.protocol.pickle import dumps
@@ -51,7 +51,7 @@ async def test_str(s, a, b):
 
 @gen_cluster(nthreads=[], client=True)
 async def test_nanny_process_failure(c, s):
-    async with Nanny(s.address, nthreads=2) as n:
+    async with Nanny(s.address, nthreads=2) as n, ConnectionPool() as rpc:
         first_dir = n.worker_dir
 
         assert os.path.exists(first_dir)
@@ -81,13 +81,12 @@ async def test_nanny_process_failure(c, s):
     assert not os.path.exists(second_dir)
     assert not os.path.exists(first_dir)
     assert first_dir != n.worker_dir
-    await ww.close_rpc()
     s.stop()
 
 
 @gen_cluster(nthreads=[])
 async def test_run(s):
-    async with Nanny(s.address, nthreads=2) as n:
+    async with Nanny(s.address, nthreads=2) as n, ConnectionPool() as rpc:
         async with rpc(n.address) as nn:
             response = await nn.run(function=dumps(lambda: 1))
             assert response["status"] == "OK"

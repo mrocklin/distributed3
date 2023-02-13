@@ -77,6 +77,7 @@ class Cluster(SyncMethodMixin):
         self.quiet = quiet
         self.scheduler_comm = None
         self._adaptive = None
+        self.pool = None
         self._sync_interval = parse_timedelta(
             scheduler_sync_interval, default="seconds"
         )
@@ -120,7 +121,8 @@ class Cluster(SyncMethodMixin):
         self._cluster_info["name"] = name
 
     async def _start(self):
-        comm = await self.scheduler_comm.live_comm()
+        assert self.scheduler_comm
+        comm = await self.pool.connect(self.scheduler_comm.addr)
         comm.name = "Cluster worker status"
         await comm.write({"op": "subscribe_worker_status"})
         self.scheduler_info = SchedulerInfo(await comm.read())
@@ -198,7 +200,7 @@ class Cluster(SyncMethodMixin):
                 await self._sync_cluster_info_task
 
         if self.scheduler_comm:
-            await self.scheduler_comm.close_rpc()
+            await self.scheduler_comm.close()
 
         for pc in self.periodic_callbacks.values():
             pc.stop()

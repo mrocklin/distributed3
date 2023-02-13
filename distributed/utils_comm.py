@@ -14,7 +14,6 @@ import dask.config
 from dask.optimization import SubgraphCallable
 from dask.utils import is_namedtuple_instance, parse_timedelta, stringify
 
-from distributed.core import rpc
 from distributed.utils import All
 
 logger = logging.getLogger(__name__)
@@ -116,7 +115,7 @@ class WrappedKey:
 _round_robin_counter = [0]
 
 
-async def scatter_to_workers(nthreads, data, rpc=rpc, report=True):
+async def scatter_to_workers(nthreads, data, rpc, report=True):
     """Scatter data directly to workers
 
     This distributes data in a round-robin fashion to a set of workers based on
@@ -139,20 +138,15 @@ async def scatter_to_workers(nthreads, data, rpc=rpc, report=True):
     d = {worker: {key: value for _, key, value in v} for worker, v in d.items()}
 
     rpcs = {addr: rpc(addr) for addr in d}
-    try:
-        out = await All(
-            [
-                rpcs[address].update_data(
-                    data=v,
-                    report=report,
-                )
-                for address, v in d.items()
-            ]
-        )
-    finally:
-        for r in rpcs.values():
-            await r.close_rpc()
-
+    out = await All(
+        [
+            rpcs[address].update_data(
+                data=v,
+                report=report,
+            )
+            for address, v in d.items()
+        ]
+    )
     nbytes = merge(o["nbytes"] for o in out)
 
     who_has = {k: [w for w, _, _ in v] for k, v in groupby(1, L).items()}

@@ -62,9 +62,8 @@ from distributed.core import (
     coerce_to_address,
     error_message,
     pingpong,
+    send_recv,
 )
-from distributed.core import rpc as RPCType
-from distributed.core import send_recv
 from distributed.diagnostics import nvml
 from distributed.diagnostics.plugin import _get_plugin_name
 from distributed.diskutils import WorkDir, WorkSpace
@@ -1577,7 +1576,6 @@ class Worker(BaseWorker, ServerNode):
                         # otherwise
                         c.close()
 
-        await self.scheduler.close_rpc()
         self._workdir.release()
 
         self.stop_services()
@@ -3477,7 +3475,7 @@ def benchmark_memory(
 
 async def benchmark_network(
     address: str,
-    rpc: ConnectionPool | Callable[[str], RPCType],
+    rpc: ConnectionPool,
     sizes: Iterable[str] = ("1 kiB", "10 kiB", "100 kiB", "1 MiB", "10 MiB", "50 MiB"),
     duration="1 s",
 ) -> dict[str, float]:

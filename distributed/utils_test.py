@@ -21,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping
@@ -52,7 +51,6 @@ from distributed.core import (
     Status,
     clean_exception,
     connect,
-    rpc,
 )
 from distributed.deploy import SpecCluster
 from distributed.diagnostics.plugin import WorkerPlugin
@@ -432,60 +430,6 @@ def run_nanny(q, scheduler_q, config, **kwargs):
             _run_and_close_tornado(_)
 
 
-@contextmanager
-def check_active_rpc(loop, active_rpc_timeout=1):
-    warnings.warn(
-        "check_active_rpc is deprecated - use gen_test()",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    active_before = set(rpc.active)
-    yield
-    # Some streams can take a bit of time to notice their peer
-    # has closed, and keep a coroutine (*) waiting for a CommClosedError
-    # before calling close_rpc() after a CommClosedError.
-    # This would happen especially if a non-localhost address is used,
-    # as Nanny does.
-    # (*) (example: gather_from_workers())
-
-    def fail():
-        pytest.fail(
-            "some RPCs left active by test: %s" % (set(rpc.active) - active_before)
-        )
-
-    async def wait():
-        await async_wait_for(
-            lambda: len(set(rpc.active) - active_before) == 0,
-            timeout=active_rpc_timeout,
-            fail_func=fail,
-        )
-
-    loop.run_sync(wait)
-
-
-@contextlib.asynccontextmanager
-async def _acheck_active_rpc(active_rpc_timeout=1):
-    active_before = set(rpc.active)
-    yield
-    # Some streams can take a bit of time to notice their peer
-    # has closed, and keep a coroutine (*) waiting for a CommClosedError
-    # before calling close_rpc() after a CommClosedError.
-    # This would happen especially if a non-localhost address is used,
-    # as Nanny does.
-    # (*) (example: gather_from_workers())
-
-    def fail():
-        pytest.fail(
-            "some RPCs left active by test: %s" % (set(rpc.active) - active_before)
-        )
-
-    await async_wait_for(
-        lambda: len(set(rpc.active) - active_before) == 0,
-        timeout=active_rpc_timeout,
-        fail_func=fail,
-    )
-
-
 @pytest.fixture
 def cluster_fixture(loop):
     with cluster() as (scheduler, workers):
@@ -599,7 +543,6 @@ def cluster(
     nworkers=2,
     nanny=False,
     worker_kwargs=None,
-    active_rpc_timeout=10,
     scheduler_kwargs=None,
     config=None,
 ):
@@ -674,13 +617,14 @@ def cluster(
                 rpc_kwargs = {}
 
             async def wait_for_workers():
-                async with rpc(saddr, **rpc_kwargs) as s:
-                    while True:
-                        nthreads = await s.ncores_running()
-                        if len(nthreads) == nworkers:
-                            break
-                        if time() - start > 5:  # pragma: nocover
-                            raise Exception("Timeout on cluster creation")
+                async with ConnectionPool() as rpc:
+                    async with rpc(saddr, **rpc_kwargs) as s:
+                        while True:
+                            nthreads = await s.ncores_running()
+                            if len(nthreads) == nworkers:
+                                break
+                            if time() - start > 5:  # pragma: nocover
+                                raise Exception("Timeout on cluster creation")
 
             _run_and_close_tornado(wait_for_workers)
 
@@ -722,10 +666,9 @@ def gen_test(
         timeout = 3600
 
     async def async_fn_outer(async_fn, /, *args, **kwargs):
-        async with _acheck_active_rpc():
-            return await asyncio.wait_for(
-                asyncio.create_task(async_fn(*args, **kwargs)), timeout
-            )
+        return await asyncio.wait_for(
+            asyncio.create_task(async_fn(*args, **kwargs)), timeout
+        )
 
     def _(func):
         @functools.wraps(func)
@@ -866,7 +809,6 @@ def gen_cluster(
     scheduler_kwargs: dict[str, Any] | None = None,
     worker_kwargs: dict[str, Any] | None = None,
     client_kwargs: dict[str, Any] | None = None,
-    active_rpc_timeout: float = 1,
     config: dict[str, Any] | None = None,
     clean_kwargs: dict[str, Any] | None = None,
     allow_unclosed: bool = False,
@@ -1085,10 +1027,9 @@ def gen_cluster(
                     return result
 
             async def async_fn_outer():
-                async with _acheck_active_rpc(active_rpc_timeout=active_rpc_timeout):
-                    if timeout:
-                        return await asyncio.wait_for(async_fn(), timeout=timeout * 2)
-                    return await async_fn()
+                if timeout:
+                    return await asyncio.wait_for(async_fn(), timeout=timeout * 2)
+                return await async_fn()
 
             return _run_and_close_tornado(async_fn_outer)
 

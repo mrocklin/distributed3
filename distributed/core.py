@@ -1024,174 +1024,6 @@ def addr_from_args(addr=None, ip=None, port=None):
     return normalize_address(addr)
 
 
-class rpc:
-    """Conveniently interact with a remote server
-
-    >>> remote = rpc(address)  # doctest: +SKIP
-    >>> response = await remote.add(x=10, y=20)  # doctest: +SKIP
-
-    One rpc object can be reused for several interactions.
-    Additionally, this object creates and destroys many comms as necessary
-    and so is safe to use in multiple overlapping communications.
-
-    When done, close comms explicitly.
-
-    >>> remote.close_comms()  # doctest: +SKIP
-    """
-
-    active: ClassVar[weakref.WeakSet[rpc]] = weakref.WeakSet()
-    comms = ()
-    address = None
-
-    def __init__(
-        self,
-        arg=None,
-        comm=None,
-        deserialize=True,
-        timeout=None,
-        connection_args=None,
-        serializers=None,
-        deserializers=None,
-    ):
-        self.comms = {}
-        self.address = coerce_to_address(arg)
-        self.timeout = timeout
-        self.status = Status.running
-        self.deserialize = deserialize
-        self.serializers = serializers
-        self.deserializers = deserializers if deserializers is not None else serializers
-        self.connection_args = connection_args or {}
-        self._created = weakref.WeakSet()
-        rpc.active.add(self)
-
-    async def live_comm(self):
-        """Get an open communication
-
-        Some comms to the ip/port target may be in current use by other
-        coroutines.  We track this with the `comms` dict
-
-            :: {comm: True/False if open and ready for use}
-
-        This function produces an open communication, either by taking one
-        that we've already made or making a new one if they are all taken.
-        This also removes comms that have been closed.
-
-        When the caller is done with the stream they should set
-
-            self.comms[comm] = True
-
-        As is done in __getattr__ below.
-        """
-        if self.status == Status.closed:
-            raise RPCClosed("RPC Closed")
-        to_clear = set()
-        open = False
-        for comm, open in self.comms.items():
-            if comm.closed():
-                to_clear.add(comm)
-            if open:
-                break
-        for s in to_clear:
-            del self.comms[s]
-        if not open or comm.closed():
-            comm = await connect(
-                self.address,
-                self.timeout,
-                deserialize=self.deserialize,
-                **self.connection_args,
-            )
-            comm.name = "rpc"
-        self.comms[comm] = False  # mark as taken
-        return comm
-
-    def close_comms(self):
-        async def _close_comm(comm):
-            # Make sure we tell the peer to close
-            try:
-                if not comm.closed():
-                    await comm.write({"op": "close", "reply": False})
-                    await comm.close()
-            except OSError:
-                comm.abort()
-
-        tasks = []
-        for comm in list(self.comms):
-            if comm and not comm.closed():
-                task = asyncio.ensure_future(_close_comm(comm))
-                tasks.append(task)
-        for comm in list(self._created):
-            if comm and not comm.closed():
-                task = asyncio.ensure_future(_close_comm(comm))
-                tasks.append(task)
-
-        self.comms.clear()
-        return tasks
-
-    def __getattr__(self, key):
-        async def send_recv_from_rpc(**kwargs):
-            if self.serializers is not None and kwargs.get("serializers") is None:
-                kwargs["serializers"] = self.serializers
-            if self.deserializers is not None and kwargs.get("deserializers") is None:
-                kwargs["deserializers"] = self.deserializers
-            comm = None
-            try:
-                comm = await self.live_comm()
-                comm.name = "rpc." + key
-                result = await send_recv(comm=comm, op=key, **kwargs)
-            except (RPCClosed, CommClosedError) as e:
-                if comm:
-                    raise type(e)(
-                        f"Exception while trying to call remote method {key!r} before comm was established."
-                    ) from e
-                else:
-                    raise type(e)(
-                        f"Exception while trying to call remote method {key!r} using comm {comm!r}."
-                    ) from e
-
-            self.comms[comm] = True  # mark as open
-            return result
-
-        return send_recv_from_rpc
-
-    async def close_rpc(self):
-        if self.status != Status.closed:
-            rpc.active.discard(self)
-        self.status = Status.closed
-        return await asyncio.gather(*self.close_comms())
-
-    def __enter__(self):
-        warnings.warn(
-            "the rpc synchronous context manager is deprecated",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        asyncio.ensure_future(self.close_rpc())
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close_rpc()
-
-    def __del__(self):
-        if self.status != Status.closed:
-            rpc.active.discard(self)
-            self.status = Status.closed
-            still_open = [comm for comm in self.comms if not comm.closed()]
-            if still_open:
-                logger.warning(
-                    "rpc object %s deleted with %d open comms", self, len(still_open)
-                )
-                for comm in still_open:
-                    comm.abort()
-
-    def __repr__(self):
-        return "<rpc to %r, %d comms>" % (self.address, len(self.comms))
-
-
 class PooledRPCCall:
     """The result of ConnectionPool()('host:port')
 
@@ -1224,9 +1056,6 @@ class PooledRPCCall:
                 comm.name = prev_name
 
         return send_recv_from_rpc
-
-    async def close_rpc(self):
-        pass
 
     # For compatibility with rpc()
     def __enter__(self):
@@ -1510,6 +1339,13 @@ class ConnectionPool:
 
         while self._connecting:
             await asyncio.sleep(0.005)
+
+    async def __aenter__(self):
+        await self
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()
 
 
 def coerce_to_address(o):

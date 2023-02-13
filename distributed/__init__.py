@@ -26,7 +26,7 @@ from distributed.client import (
     performance_report,
     wait,
 )
-from distributed.core import Status, connect, rpc
+from distributed.core import ConnectionPool, Status, connect
 from distributed.deploy import (
     Adaptive,
     LocalCluster,
@@ -118,6 +118,7 @@ __all__ = [
     "Client",
     "CompatibleExecutor",
     "CondaInstall",
+    "ConnectionPool",
     "Environ",
     "Event",
     "Future",
@@ -164,7 +165,6 @@ __all__ = [
     "print",
     "progress",
     "rejoin",
-    "rpc",
     "secede",
     "sync",
     "wait",
