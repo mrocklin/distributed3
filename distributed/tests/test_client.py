@@ -3539,14 +3539,13 @@ def test_get_returns_early(c):
 
 
 @pytest.mark.slow
-@gen_cluster(client=True)
-async def test_Client_clears_references_after_restart(c, s, a, b):
+@gen_cluster(client=True, Worker=Nanny)
+async def test_client_clears_references_after_restart(c, s, a, b):
     x = c.submit(inc, 1)
     assert x.key in c.refcount
     assert x.key in c.futures
 
-    with pytest.raises(TimeoutError):
-        await c.restart(timeout=5)
+    await c.restart()
 
     assert x.key not in c.refcount
     assert not c.futures
@@ -4893,26 +4892,27 @@ async def test_restart_workers(c, s, a, b):
 
 @gen_cluster(client=True)
 async def test_restart_workers_no_nanny_raises(c, s, a, b):
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError) as exc_info:
         await c.restart_workers(workers=[a.address])
-    msg = str(excinfo.value).lower()
-    assert "restarting workers requires a nanny" in msg
+    msg = str(exc_info.value)
+    assert "Expected all workers to have a nanny" in msg
+    assert "1 worker(s) without a nanny" in msg
     assert a.address in msg
 
 
 class SlowKillNanny(Nanny):
     async def kill(self, timeout=2, **kwargs):
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         return await super().kill(timeout=timeout)
 
 
 @gen_cluster(client=True, Worker=SlowKillNanny)
 async def test_restart_workers_timeout(c, s, a, b):
-    with pytest.raises(TimeoutError) as excinfo:
+    with pytest.raises(RuntimeError) as excinfo:
         await c.restart_workers(workers=[a.worker_address], timeout=0.001)
     msg = str(excinfo.value).lower()
-    assert "workers failed to restart" in msg
-    assert a.worker_address in msg
+    assert "1/1 nannies failed to restart" in msg
+    assert a.address in msg
 
 
 class MyException(Exception):

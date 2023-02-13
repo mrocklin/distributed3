@@ -172,7 +172,7 @@ def test_worker_doesnt_await_task_completion(loop):
             future = c.submit(sleep, 100)
             sleep(0.1)
             start = time()
-            c.restart(timeout="5s", wait_for_workers=False)
+            c.restart(timeout="5s")
             stop = time()
             assert stop - start < 10
 

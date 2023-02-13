@@ -3456,78 +3456,92 @@ class Client(SyncMethodMixin):
         else:
             return result
 
-    async def _restart(self, timeout=no_default, wait_for_workers=True):
+    async def _restart(self, timeout=no_default):
         if timeout == no_default:
             timeout = self._timeout * 4
         if timeout is not None:
             timeout = parse_timedelta(timeout, "s")
 
-        await self.scheduler.restart(timeout=timeout, wait_for_workers=wait_for_workers)
+        msg = await self.scheduler.restart(timeout=timeout)
+
+        if msg["status"] == "error":
+            typ, exc, tb = clean_exception(**msg)
+            raise exc.with_traceback(tb)
+        assert msg["status"] == "OK", msg
         return self
 
-    def restart(self, timeout=no_default, wait_for_workers=True):
+    def restart(self, timeout=no_default):
         """
-        Restart all workers. Reset local state. Optionally wait for workers to return.
+        Reset local state and restart all workers
 
-        Workers without nannies are shut down, hoping an external deployment system
-        will restart them. Therefore, if not using nannies and your deployment system
-        does not automatically restart workers, ``restart`` will just shut down all
-        workers, then time out!
+        This methods expects all workers to have nannies to be able to restart them.
+        If workers without nannies exist, ``restart`` will raise a ``ValueError``
+        that lists the workers without nannies. Consider removing those workers
+        and calling ``restart`` again afterward.
 
-        After ``restart``, all connected workers are new, regardless of whether ``TimeoutError``
-        was raised. Any workers that failed to shut down in time are removed, and
-        may or may not shut down on their own in the future.
+        If ``restart`` fails or times out, it will raise an error and
+        leave the cluster in an undefined state
 
         Parameters
         ----------
         timeout:
-            How long to wait for workers to shut down and come back, if ``wait_for_workers``
-            is True, otherwise just how long to wait for workers to shut down.
-            Raises ``asyncio.TimeoutError`` if this is exceeded.
-        wait_for_workers:
-            Whether to wait for all workers to reconnect, or just for them to shut down
-            (default True). Use ``restart(wait_for_workers=False)`` combined with
-            :meth:`Client.wait_for_workers` for granular control over how many workers to
-            wait for.
+            Time in seconds before ``restart`` fails and raises an error
 
-        See also
+        Raises
+        ------
+        ValueError
+            If any of the ``workers`` do not have a nanny
+        dask.distributed.TimeoutError
+            If ``timeout`` seconds are elapsed before returning
+        RuntimeError
+            If ``restart`` fails at any stage or fails to restart workers
+            before timing out
+
+        See Also
         --------
         Scheduler.restart
         Client.restart_workers
         """
-        return self.sync(
-            self._restart, timeout=timeout, wait_for_workers=wait_for_workers
-        )
+        return self.sync(self._restart, timeout=timeout)
 
-    async def _restart_workers(
-        self, workers: list[str], timeout: int | float | None = None
-    ):
-        results = await self.scheduler.broadcast(
-            msg={"op": "restart", "timeout": timeout}, workers=workers, nanny=True
-        )
-        timeout_workers = {
-            key: value for key, value in results.items() if value == "timed out"
-        }
-        if timeout_workers:
-            raise TimeoutError(
-                f"The following workers failed to restart with {timeout} seconds: {list(timeout_workers.keys())}"
-            )
+    async def _restart_workers(self, workers, timeout=no_default):
+        if timeout == no_default:
+            timeout = self._timeout * 4
+        if timeout is not None:
+            timeout = parse_timedelta(timeout, "s")
 
-    def restart_workers(self, workers: list[str], timeout: int | float | None = None):
-        """Restart a specified set of workers
+        msg = await self.scheduler.restart_workers(workers=workers, timeout=timeout)
 
-        .. note::
+        if msg["status"] == "error":
+            typ, exc, tb = clean_exception(**msg)
+            raise exc.with_traceback(tb)
+        assert msg["status"] == "OK", msg
+        return self
 
-            Only workers being monitored by a :class:`distributed.Nanny` can be restarted.
+    def restart_workers(self, workers, timeout=no_default):
+        """
+        Restart a specified set of workers
 
-        See ``Nanny.restart`` for more details.
+        This methods expects all workers specified to have nannies to be able to restart them.
+        If workers without nannies exist, ``Client.restart_workers`` will raise a
+        ``ValueError`` that lists the workers without nannies. Consider removing
+        those workers and calling ``Client.restart_workers`` again afterward.
 
         Parameters
         ----------
-        workers : list[str]
-            Workers to restart.
-        timeout : int | float | None
-            Number of seconds to wait
+        workers:
+            Workers to restart
+        timeout:
+            Raise `RuntimeError` if ``restart_workers`` takes more than ``timeout``
+            seconds
+
+
+        Raises
+        ------
+        ValueError
+            If any of the ``workers`` do not have a nanny
+        RuntimeError
+            If ``restart`` to restart workers or times out while trying
 
         Notes
         -----
@@ -3553,13 +3567,8 @@ class Client(SyncMethodMixin):
         See Also
         --------
         Client.restart
+        Scheduler.restart_workers
         """
-        info = self.scheduler_info()
-        for worker in workers:
-            if info["workers"][worker]["nanny"] is None:
-                raise ValueError(
-                    f"Restarting workers requires a nanny to be used. Worker {worker} has type {info['workers'][worker]['type']}."
-                )
         return self.sync(
             self._restart_workers,
             workers=workers,

@@ -1081,13 +1081,23 @@ async def test_restart_waits_for_new_workers(c, s, *workers):
     assert set(s.workers.values()).isdisjoint(original_workers.values())
 
 
+@pytest.mark.slow
+@gen_cluster(client=True, Worker=Worker)
+async def test_restart_no_nannies(c, s, a, b):
+    with pytest.raises(
+        ValueError, match=r"Expected all workers to have a nanny"
+    ) as exc_info:
+        await c.restart()
+    assert set(s.workers.keys()) == set(exc_info.value.args[1])
+
+
 class SlowKillNanny(Nanny):
     def __init__(self, *args, **kwargs):
         self.kill_proceed = asyncio.Event()
         self.kill_called = asyncio.Event()
         super().__init__(*args, **kwargs)
 
-    async def kill(self, *, timeout, reason=None):
+    async def kill(self, *, timeout=30, reason=None):
         self.kill_called.set()
         print("kill called")
         await asyncio.wait_for(self.kill_proceed.wait(), timeout)
@@ -1095,7 +1105,12 @@ class SlowKillNanny(Nanny):
         return await super().kill(timeout=timeout, reason=reason)
 
 
-@gen_cluster(client=True, Worker=SlowKillNanny, nthreads=[("", 1)] * 2)
+@gen_cluster(
+    client=True,
+    Worker=SlowKillNanny,
+    nthreads=[("", 1)] * 2,
+    config={"distributed.scheduler.allowed-failures": 0},
+)
 async def test_restart_nanny_timeout_exceeded(c, s, a, b):
     f = c.submit(div, 1, 0)
     fr = c.submit(inc, 1, resources={"FOO": 1})
@@ -1105,14 +1120,17 @@ async def test_restart_nanny_timeout_exceeded(c, s, a, b):
     assert s.unrunnable
     assert s.tasks
 
-    with pytest.raises(
-        TimeoutError, match=r"2/2 nanny worker\(s\) did not shut down within 1s"
-    ):
-        await c.restart(timeout="1s")
+    with captured_logger("distributed") as logger:
+        with pytest.raises(RuntimeError, match=r"2/2 nannies failed to restart"):
+            await c.restart(timeout="1s")
+    logs = logger.getvalue()
+
     assert a.kill_called.is_set()
     assert b.kill_called.is_set()
 
-    assert not s.workers
+    assert f"Scheduler timed out trying to restart worker on {a.address}." in logs
+    assert f"Scheduler timed out trying to restart worker on {b.address}." in logs
+
     assert not s.erred_tasks
     assert not s.computations
     assert not s.unrunnable
@@ -1122,63 +1140,7 @@ async def test_restart_nanny_timeout_exceeded(c, s, a, b):
     assert f.status == "cancelled"
     assert fr.status == "cancelled"
 
-
-@gen_cluster(client=True, nthreads=[("", 1)] * 2)
-async def test_restart_not_all_workers_return(c, s, a, b):
-    with pytest.raises(TimeoutError, match="Waited for 2 worker"):
-        await c.restart(timeout="1s")
-
-    assert not s.workers
-    assert a.status in (Status.closed, Status.closing)
-    assert b.status in (Status.closed, Status.closing)
-
-
-@gen_cluster(client=True, nthreads=[("", 1)])
-async def test_restart_worker_rejoins_after_timeout_expired(c, s, a):
-    """
-    We don't want to see an error message like:
-
-    ``Waited for 1 worker(s) to reconnect after restarting, but after 0s, only 1 have returned.``
-
-    If a worker rejoins after our last poll for new workers, but before we raise the error,
-    we shouldn't raise the error.
-    """
-    # We'll use a 0s timeout on the restart, so it always expires.
-    # And we'll use a plugin to block the restart process, and spin up a new worker
-    # in the middle of it.
-
-    class Plugin(SchedulerPlugin):
-        removed = asyncio.Event()
-        proceed = asyncio.Event()
-
-        async def remove_worker(self, *args, **kwargs):
-            self.removed.set()
-            await self.proceed.wait()
-
-    s.add_plugin(Plugin())
-
-    task = asyncio.create_task(c.restart(timeout=0))
-    await Plugin.removed.wait()
-    assert not s.workers
-
-    async with Worker(s.address, nthreads=1) as w:
-        assert len(s.workers) == 1
-        Plugin.proceed.set()
-
-        # New worker has joined, but the timeout has expired (since it was 0).
-        # Still, we should not time out.
-        await task
-
-
-@gen_cluster(client=True, nthreads=[("", 1)] * 2)
-async def test_restart_no_wait_for_workers(c, s, a, b):
-    await c.restart(timeout="1s", wait_for_workers=False)
-
-    assert not s.workers
-    # Workers are not immediately closed because of https://github.com/dask/distributed/issues/6390
-    # (the message is still waiting in the BatchedSend)
-    await a.finished()
-    await b.finished()
+    print(logs)
 
 
 @pytest.mark.slow
@@ -1188,15 +1150,12 @@ async def test_restart_some_nannies_some_not(c, s, a, b):
     async with Worker(s.address, nthreads=1) as w:
         await c.wait_for_workers(3)
 
-        # FIXME how to make this not always take 20s if the nannies do restart quickly?
-        with pytest.raises(TimeoutError, match=r"The 1 worker\(s\) not using Nannies"):
-            await c.restart(timeout="20s")
+        with pytest.raises(
+            ValueError, match=r"Expected all workers to have a nanny"
+        ) as e:
+            await c.restart()
 
-        assert w.status == Status.closed
-
-        assert len(s.workers) == 2
-        assert set(s.workers).isdisjoint(original_addrs)
-        assert w.address not in s.workers
+    assert w.address in e.value.args[1]
 
 
 @gen_cluster(
@@ -1211,7 +1170,7 @@ async def test_restart_heartbeat_before_closing(c, s, n):
     https://github.com/dask/distributed/issues/6494
     """
     prev_workers = dict(s.workers)
-    restart_task = asyncio.create_task(s.restart())
+    restart_task = asyncio.create_task(s.restart(timeout=5))
 
     await n.kill_called.wait()
     await asyncio.sleep(0.5)  # significantly longer than the heartbeat interval
@@ -1226,6 +1185,31 @@ async def test_restart_heartbeat_before_closing(c, s, n):
 
     await restart_task
     await c.wait_for_workers(1)
+
+
+@gen_cluster(client=True, nthreads=[("", 1)], Worker=Nanny)
+async def test_restart_raises_with_failing_scheduler_plugin(c, s, n):
+    class BadPlugin(SchedulerPlugin):
+        def restart(self, scheduler: Scheduler) -> None:
+            raise NotImplementedError()
+
+    plugin = BadPlugin()
+    await c.register_scheduler_plugin(plugin=plugin, name="bad-plugin")
+    with pytest.raises(RuntimeError, match="plugins failed to restart") as exc_info:
+        await c.restart()
+    assert "bad-plugin" in exc_info.value.args[1]
+
+
+@gen_cluster(client=True, nthreads=[("", 1)], Worker=Nanny)
+async def test_restart_slow_scheduler_plugin_times_out(c, s, n):
+    class SlowPlugin(SchedulerPlugin):
+        def restart(self, scheduler: Scheduler) -> None:
+            sleep(0.11)
+
+    plugin = SlowPlugin()
+    await c.register_scheduler_plugin(plugin=plugin)
+    with pytest.raises(TimeoutError, match="Timed out while restarting plugins"):
+        await c.restart(timeout=0.1)
 
 
 @gen_cluster()
