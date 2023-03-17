@@ -21,7 +21,6 @@ from distributed.proctitle import (
 
 logger = logging.getLogger("distributed.scheduler")
 
-
 pem_file_option_type = click.Path(exists=True, resolve_path=True)
 
 

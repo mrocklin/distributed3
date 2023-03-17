@@ -17,6 +17,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, TypeVar, final
 
 import tblib
+from opentelemetry import propagate, trace
 from tlz import merge
 from tornado.ioloop import IOLoop
 
@@ -87,6 +88,7 @@ class RPCClosed(IOError):
 
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 def raise_later(exc):
@@ -787,80 +789,91 @@ class Server:
                     raise ValueError(
                         "Received unexpected message without 'op' key: " + str(msg)
                     ) from e
-                if self.counters is not None:
-                    self.counters["op"].add(op)
-                self._comms[comm] = op
-                serializers = msg.pop("serializers", None)
-                close_desired = msg.pop("close", False)
-                reply = msg.pop("reply", True)
-                if op == "close":
-                    if reply:
-                        await comm.write("OK")
-                    break
+                carrier = msg.pop("otel_context", None)
+                context = propagate.extract(carrier) if carrier is not None else None
+                with tracer.start_as_current_span(
+                    f"COMM HANDLER: {op}", context=context
+                ):
+                    if self.counters is not None:
+                        self.counters["op"].add(op)
+                    self._comms[comm] = op
+                    serializers = msg.pop("serializers", None)
+                    close_desired = msg.pop("close", False)
+                    reply = msg.pop("reply", True)
+                    if op == "close":
+                        if reply:
+                            await comm.write("OK")
+                        break
 
-                result = None
-                try:
-                    if op in self.blocked_handlers:
-                        _msg = (
-                            "The '{op}' handler has been explicitly disallowed "
-                            "in {obj}, possibly due to security concerns."
-                        )
-                        exc = ValueError(_msg.format(op=op, obj=type(self).__name__))
-                        handler = raise_later(exc)
-                    else:
-                        handler = self.handlers[op]
-                except KeyError:
-                    logger.warning(
-                        "No handler %s found in %s",
-                        op,
-                        type(self).__name__,
-                        exc_info=True,
-                    )
-                else:
-                    if serializers is not None and has_keyword(handler, "serializers"):
-                        msg["serializers"] = serializers  # add back in
-
-                    logger.debug("Calling into handler %s", handler.__name__)
+                    result = None
                     try:
-                        if _expects_comm(handler):
-                            result = handler(comm, **msg)
-                        else:
-                            result = handler(**msg)
-                        if inspect.iscoroutine(result):
-                            result = await result
-                        elif inspect.isawaitable(result):
-                            raise RuntimeError(
-                                f"Comm handler returned unknown awaitable. Expected coroutine, instead got {type(result)}"
+                        if op in self.blocked_handlers:
+                            _msg = (
+                                "The '{op}' handler has been explicitly disallowed "
+                                "in {obj}, possibly due to security concerns."
                             )
-                    except CommClosedError:
-                        if self.status == Status.running:
-                            logger.info("Lost connection to %r", address, exc_info=True)
-                        break
-                    except Exception as e:
-                        logger.exception("Exception while handling op %s", op)
-                        if comm.closed():
-                            raise
+                            exc = ValueError(
+                                _msg.format(op=op, obj=type(self).__name__)
+                            )
+                            handler = raise_later(exc)
                         else:
-                            result = error_message(e, status="uncaught-error")
-
-                if reply and result != Status.dont_reply:
-                    try:
-                        await comm.write(result, serializers=serializers)
-                    except (OSError, TypeError) as e:
-                        logger.debug(
-                            "Lost connection to %r while sending result for op %r: %s",
-                            address,
+                            handler = self.handlers[op]
+                    except KeyError:
+                        logger.warning(
+                            "No handler %s found in %s",
                             op,
-                            e,
+                            type(self).__name__,
+                            exc_info=True,
                         )
-                        break
+                    else:
+                        if serializers is not None and has_keyword(
+                            handler, "serializers"
+                        ):
+                            msg["serializers"] = serializers  # add back in
 
-                self._comms[comm] = None
-                msg = result = None
-                if close_desired:
-                    await comm.close()
-                if comm.closed():
-                    break
+                        logger.debug("Calling into handler %s", handler.__name__)
+                        try:
+                            if _expects_comm(handler):
+                                result = handler(comm, **msg)
+                            else:
+                                result = handler(**msg)
+                            if inspect.iscoroutine(result):
+                                result = await result
+                            elif inspect.isawaitable(result):
+                                raise RuntimeError(
+                                    f"Comm handler returned unknown awaitable. Expected coroutine, instead got {type(result)}"
+                                )
+                        except CommClosedError:
+                            if self.status == Status.running:
+                                logger.info(
+                                    "Lost connection to %r", address, exc_info=True
+                                )
+                            break
+                        except Exception as e:
+                            logger.exception("Exception while handling op %s", op)
+                            if comm.closed():
+                                raise
+                            else:
+                                result = error_message(e, status="uncaught-error")
+
+                    if reply and result != Status.dont_reply:
+                        try:
+                            await comm.write(result, serializers=serializers)
+                        except (OSError, TypeError) as e:
+                            logger.debug(
+                                "Lost connection to %r while sending result for op %r: %s",
+                                address,
+                                op,
+                                e,
+                            )
+                            break
+
+                    self._comms[comm] = None
+                    msg = result = None
+                    if close_desired:
+                        await comm.close()
+                    if comm.closed():
+                        break
 
         finally:
             del self._comms[comm]
@@ -896,6 +909,10 @@ class Server:
                     if msg == "OK":
                         break
                     op = msg.pop("op")
+                    carrier = msg.pop("otel_context", None)
+                    context = (
+                        propagate.extract(carrier) if carrier is not None else None
+                    )
                     if op:
                         if op == "close-stream":
                             closed = True
@@ -906,12 +923,30 @@ class Server:
                             break
                         handler = self.stream_handlers[op]
                         if iscoroutinefunction(handler):
+
+                            async def instrumented_handler(
+                                handler, op, context, kwargs
+                            ):
+                                with tracer.start_as_current_span(
+                                    f"STREAM HANDLER: {op}",
+                                    context=context,
+                                ):
+                                    return await handler(**kwargs)
+
                             self._ongoing_background_tasks.call_soon(
-                                handler, **merge(extra, msg)
+                                instrumented_handler,
+                                handler,
+                                op,
+                                context,
+                                merge(extra, msg),
                             )
                             await asyncio.sleep(0)
                         else:
-                            handler(**merge(extra, msg))
+                            with tracer.start_as_current_span(
+                                f"STREAM HANDLER: {op}",
+                                context=context,
+                            ):
+                                handler(**merge(extra, msg))
                     else:
                         logger.error("odd message %s", msg)
                 await asyncio.sleep(0)
@@ -1010,6 +1045,9 @@ async def send_recv(  # type: ignore[no-untyped-def]
     response = await send_recv(comm, op='ping', reply=True)
     """
     msg = kwargs
+    context: dict[str, Any] = {}
+    propagate.inject(context)
+    msg["otel_context"] = context
     msg["reply"] = reply
     please_close = kwargs.get("close", False)
     force_close = False

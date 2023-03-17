@@ -1536,6 +1536,7 @@ class Client(SyncMethodMixin):
                         raise exc.with_traceback(tb)
 
                     op = msg.pop("op")
+                    msg.pop("otel_context")
 
                     if op == "close" or op == "stream-closed":
                         breakout = True

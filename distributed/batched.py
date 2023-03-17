@@ -5,6 +5,7 @@ import logging
 from collections import deque
 from typing import Any
 
+from opentelemetry import propagate
 from tornado import gen, locks
 from tornado.ioloop import IOLoop
 
@@ -154,6 +155,12 @@ class BatchedSend:
         """
         if self.comm is not None and self.comm.closed():
             raise CommClosedError(f"Comm {self.comm!r} already closed.")
+
+        context: dict[str, Any] = {}
+        propagate.inject(context)
+        for msg in msgs:
+            if isinstance(msg, dict):
+                msg["otel_context"] = context
 
         self.message_count += len(msgs)
         self.buffer.extend(msgs)
