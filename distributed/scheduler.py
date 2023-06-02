@@ -1128,6 +1128,29 @@ class TaskGroup:
         """
         return recursive_to_dict(self, exclude=exclude, members=True)
 
+    @property
+    def rootish(self):
+        """
+        Whether this ``TaskGroup`` is root or root-like.
+
+        Root-ish tasks are part of a group that's typically considered to be at
+        the root or near the root of the graph and we expect it to be
+        responsible for the majority of data production.
+
+        Similar fan-out like patterns can also be found in intermediate graph
+        layers.
+
+        Most scheduler heuristics should be using
+        `Scheduler.is_rootish_no_restrictions` if they need to guarantee that a
+        task doesn't have any restrictions and can be run anywhere
+        """
+        return (
+            len(self.dependencies) < 5
+            and (ndeps := sum(map(len, self.dependencies))) < 5
+            # Fan-out
+            and (len(self) / ndeps > 2 if ndeps else True)
+        )
+
 
 class TaskState:
     """A simple object holding information about a task.
@@ -2087,6 +2110,7 @@ class SchedulerState:
         """
         if self.validate:
             # See root-ish-ness note below in `decide_worker_rootish_queuing_enabled`
+            assert self._is_rootish_no_restrictions(ts)
             assert math.isinf(self.WORKER_SATURATION)
 
         pool = self.idle.values() if self.idle else self.running
@@ -2100,6 +2124,7 @@ class SchedulerState:
             and tg.last_worker_tasks_left
             and lws.status == Status.running
             and self.workers.get(lws.address) is lws
+            and len(tg) > self.total_nthreads * 2
         ):
             ws = lws
         else:
@@ -2122,7 +2147,16 @@ class SchedulerState:
 
         return ws
 
-    def decide_worker_rootish_queuing_enabled(self) -> WorkerState | None:
+    def worker_objective_rootish_queuing(self, ws, ts):
+        # FIXME: This is basically the ordinary worker_objective but with task
+        # counts instead of occupancy.
+        comm_bytes = sum(
+            dts.get_nbytes() for dts in ts.dependencies if ws not in dts.who_has
+        )
+        # See test_nbytes_determines_worker
+        return (len(ws.processing) / ws.nthreads, comm_bytes, ws.nbytes)
+
+    def decide_worker_rootish_queuing_enabled(self, ts) -> WorkerState | None:
         """Pick a worker for a runnable root-ish task, if not all are busy.
 
         Picks the least-busy worker out of the ``idle`` workers (idle workers have fewer
@@ -2162,7 +2196,7 @@ class SchedulerState:
         # NOTE: this will lead to worst-case scheduling with regards to co-assignment.
         ws = min(
             self.idle_task_count,
-            key=lambda ws: len(ws.processing) / ws.nthreads,
+            key=partial(self.worker_objective_rootish_queuing, ts=ts),
         )
         if self.validate:
             assert not _worker_full(ws, self.WORKER_SATURATION), (
@@ -2254,7 +2288,7 @@ class SchedulerState:
         """
         ts = self.tasks[key]
 
-        if self.is_rootish(ts):
+        if self._is_rootish_no_restrictions(ts):
             # NOTE: having two root-ish methods is temporary. When the feature flag is
             # removed, there should only be one, which combines co-assignment and
             # queuing. Eventually, special-casing root tasks might be removed entirely,
@@ -2263,7 +2297,7 @@ class SchedulerState:
                 if not (ws := self.decide_worker_rootish_queuing_disabled(ts)):
                     return {ts.key: "no-worker"}, {}, {}
             else:
-                if not (ws := self.decide_worker_rootish_queuing_enabled()):
+                if not (ws := self.decide_worker_rootish_queuing_enabled(ts)):
                     return {ts.key: "queued"}, {}, {}
         else:
             if not (ws := self.decide_worker_non_rootish(ts)):
@@ -2736,7 +2770,7 @@ class SchedulerState:
             assert not ts.actor, f"Actors can't be queued: {ts}"
             assert ts in self.queued
 
-        if ws := self.decide_worker_rootish_queuing_enabled():
+        if ws := self.decide_worker_rootish_queuing_enabled(ts):
             self.queued.discard(ts)
             worker_msgs = self._add_to_processing(ts, ws)
         # If no worker, task just stays `queued`
@@ -2860,22 +2894,16 @@ class SchedulerState:
     # Assigning Tasks to Workers #
     ##############################
 
-    def is_rootish(self, ts: TaskState) -> bool:
-        """
-        Whether ``ts`` is a root or root-like task.
-
-        Root-ish tasks are part of a group that's much larger than the cluster,
-        and have few or no dependencies.
-        """
-        if ts.resource_restrictions or ts.worker_restrictions or ts.host_restrictions:
+    def _is_rootish_no_restrictions(self, ts: TaskState) -> bool:
+        """See also ``TaskGroup.rootish``"""
+        if (
+            ts.resource_restrictions
+            or ts.worker_restrictions
+            or ts.host_restrictions
+            or ts.actor
+        ):
             return False
-        tg = ts.group
-        # TODO short-circuit to True if `not ts.dependencies`?
-        return (
-            len(tg) > self.total_nthreads * 2
-            and len(tg.dependencies) < 5
-            and sum(map(len, tg.dependencies)) < 5
-        )
+        return ts.group.rootish
 
     def check_idle_saturated(self, ws: WorkerState, occ: float = -1.0) -> None:
         """Update the status of the idle and saturated state

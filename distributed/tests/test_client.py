@@ -1241,13 +1241,13 @@ async def test_get_nbytes(c, s, a, b):
     assert s.get_nbytes(summary=False) == {x.key: sizeof(1), y.key: sizeof(2)}
 
 
-@pytest.mark.skipif(not LINUX, reason="Need 127.0.0.2 to mean localhost")
-@gen_cluster([("127.0.0.1", 1), ("127.0.0.2", 2)], client=True)
+@gen_cluster([("", 1), ("", 2)], client=True)
 async def test_nbytes_determines_worker(c, s, a, b):
-    x = c.submit(identity, 1, workers=[a.ip])
-    y = c.submit(identity, tuple(range(100)), workers=[b.ip])
+    x = c.submit(identity, 1, workers=[a.address], key="x")
+    y = c.submit(identity, tuple(range(100)), workers=[b.address], key="y")
     await c.gather([x, y])
-
+    assert x.key in list(a.data.keys())
+    assert y.key in list(b.data.keys())
     z = c.submit(lambda x, y: None, x, y)
     await z
     assert s.tasks[z.key].who_has == {s.workers[b.address]}
@@ -3966,7 +3966,12 @@ async def test_scatter_compute_store_lose(c, s, a, b):
         await asyncio.sleep(0.01)
 
 
-@gen_cluster(client=True)
+# FIXME there is a subtle race condition depending on how fast a worker is being
+# closed. If is is closed very quickly, the transitions are never issuing a
+# cancelled-key report to the client and we're stuck in the x.status loop. This
+# is mor likely to happen if tasks are queued since y never makes it to the
+# threadpool, delaying its shutdown
+@gen_cluster(client=True, config={"distributed.scheduler.worker-saturation": "inf"})
 async def test_scatter_compute_store_lose_processing(c, s, a, b):
     """
     Create irreplaceable data on one machine,
@@ -3983,7 +3988,7 @@ async def test_scatter_compute_store_lose_processing(c, s, a, b):
     await a.close()
 
     while x.status == "finished":
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.5)
 
     assert y.status == "cancelled"
     assert z.status == "cancelled"

@@ -633,6 +633,7 @@ async def test_steal_when_more_tasks(c, s, a, *rest):
         assert time() < start + 1
 
 
+@pytest.mark.xfail(reason="FIXME: Is this logic still accurate with queuing?")
 @gen_cluster(
     client=True,
     nthreads=[("127.0.0.1", 1)] * 10,

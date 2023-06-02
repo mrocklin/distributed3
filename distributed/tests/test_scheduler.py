@@ -306,7 +306,7 @@ async def test_decide_worker_rootish_while_last_worker_is_retiring(c, s, a):
         # - TaskGroup(y) has more than 4 tasks (total_nthreads * 2)
         # - TaskGroup(y) has less than 5 dependency groups
         # - TaskGroup(y) has less than 5 dependency tasks
-        assert s.is_rootish(s.tasks["y-2"])
+        assert s._is_rootish_no_restrictions(s.tasks["y-2"])
 
         await evx[0].set()
         await wait_for_state("y-0", "processing", s)
@@ -4240,21 +4240,8 @@ async def test_transition_waiting_memory(c, s, a, b):
     assert_story(s.story("y"), [("y", "waiting", "waiting", {})])
 
 
-@pytest.mark.parametrize(
-    "rootish",
-    [
-        pytest.param(
-            True,
-            marks=pytest.mark.skipif(
-                not QUEUING_ON_BY_DEFAULT,
-                reason="Nothing will be classified as root-ish",
-            ),
-        ),
-        False,
-    ],
-)
 @gen_cluster(client=True, nthreads=[("", 1)])
-async def test_deadlock_resubmit_queued_tasks_fast(c, s, a, rootish):
+async def test_deadlock_resubmit_queued_tasks_fast(c, s, a):
     # See https://github.com/dask/distributed/issues/7200
     block = Event()
     block2 = Event()
@@ -4265,10 +4252,7 @@ async def test_deadlock_resubmit_queued_tasks_fast(c, s, a, rootish):
         executing.set()
         block.wait()
 
-    if rootish:
-        ntasks = s.total_nthreads * 2 + 1
-    else:
-        ntasks = 1
+    ntasks = 1
     keys = [f"fut-{i}" for i in range(ntasks)]
 
     def submit_tasks():
@@ -4284,10 +4268,7 @@ async def test_deadlock_resubmit_queued_tasks_fast(c, s, a, rootish):
     def assert_rootish():
         # Just to verify our assumptions in case the definition changes. This is
         # currently a bit brittle
-        if rootish:
-            assert all(s.is_rootish(s.tasks[k]) for k in keys)
-        else:
-            assert not any(s.is_rootish(s.tasks[k]) for k in keys)
+        assert all(s._is_rootish_no_restrictions(s.tasks[k]) for k in keys)
 
     f1 = submit_tasks()
     # Make sure that the worker is properly saturated
@@ -4322,8 +4303,7 @@ async def test_deadlock_resubmit_queued_tasks_fast(c, s, a, rootish):
         while len(s.tasks) == nblocking_tasks:
             await asyncio.sleep(0.005)
         assert_rootish()
-        if rootish:
-            assert all(s.tasks[k] in s.queued for k in keys), [s.tasks[k] for k in keys]
+        assert all(s.tasks[k] in s.queued for k in keys), [s.tasks[k] for k in keys]
         await block.set()
         # At this point we need/want to wait for the task-finished message to
         # arrive on the scheduler. There is no proper hook to wait, therefore we

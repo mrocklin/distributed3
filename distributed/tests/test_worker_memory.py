@@ -535,9 +535,9 @@ async def test_pause_executor_manual(c, s, a):
     # Task that is queued on the scheduler when the worker pauses.
     # It is not sent to the worker.
     z = c.submit(inc, 2, key="z")
-    while "z" not in s.tasks or s.tasks["z"].state != "no-worker":
+    while "z" not in s.tasks or s.tasks["z"].state not in ("no-worker", "queued"):
         await asyncio.sleep(0.01)
-    assert s.unrunnable == {s.tasks["z"]}
+    assert s.tasks["z"] in s.unrunnable or s.tasks["z"] in s.queued
 
     # Test that a task that already started when the worker paused can complete
     # and its output can be retrieved. Also test that the now free slot won't be
@@ -602,9 +602,9 @@ async def test_pause_executor_with_memory_monitor(c, s, a):
         # Task that is queued on the scheduler when the worker pauses.
         # It is not sent to the worker.
         z = c.submit(inc, 2, key="z")
-        while "z" not in s.tasks or s.tasks["z"].state != "no-worker":
+        while "z" not in s.tasks or s.tasks["z"].state not in ("no-worker", "queued"):
             await asyncio.sleep(0.01)
-        assert s.unrunnable == {s.tasks["z"]}
+        assert s.tasks["z"] in s.unrunnable or s.tasks["z"] in s.queued
 
         # Test that a task that already started when the worker paused can complete
         # and its output can be retrieved. Also test that the now free slot won't be
