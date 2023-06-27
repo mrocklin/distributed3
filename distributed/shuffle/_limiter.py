@@ -70,3 +70,11 @@ class ResourceLimiter:
         self._acquired -= value
         async with self._condition:
             self._condition.notify_all()
+
+    def decrease_nonblocking(self, value: int) -> None:
+        """Decrease the internal counter by value"""
+        if value > self._acquired:
+            raise RuntimeError(
+                f"Cannot release more than what was acquired! release: {value} acquired: {self._acquired}"
+            )
+        self._acquired -= value

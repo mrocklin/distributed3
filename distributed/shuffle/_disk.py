@@ -42,11 +42,13 @@ class DiskShardsBuffer(ShardsBuffer):
         self,
         directory: str | pathlib.Path,
         memory_limiter: ResourceLimiter | None = None,
+        min_message_size=-1,
     ):
         super().__init__(
             memory_limiter=memory_limiter,
             # Disk is not able to run concurrently atm
             concurrency_limit=1,
+            min_message_size=min_message_size,
         )
         self.directory = pathlib.Path(directory)
         self.directory.mkdir(exist_ok=True)
@@ -77,22 +79,29 @@ class DiskShardsBuffer(ShardsBuffer):
     def read(self, id: int | str) -> bytes:
         """Read a complete file back into memory"""
         self.raise_on_exception()
-        if not self._inputs_done:
-            raise RuntimeError("Tried to read from file before done.")
-
+        # if not self._inputs_done:
+        #     raise RuntimeError("Tried to read from file before done.")
+        data = []
+        if id in self.shards:
+            data = self.shards.pop(id)  # type: ignore
+            in_memory_size = self.sizes.pop(id)
+            if self.memory_limiter:
+                self.memory_limiter.decrease_nonblocking(in_memory_size)
+            self.bytes_memory -= in_memory_size
         try:
             with self.time("read"):
                 with open(
                     self.directory / str(id), mode="rb", buffering=100_000_000
                 ) as f:
-                    data = f.read()
+                    data_disk = f.read()
                     size = f.tell()
+                    data.insert(0, data_disk)
+                    self.bytes_read += size
         except FileNotFoundError:
-            raise KeyError(id)
+            pass
 
         if data:
-            self.bytes_read += size
-            return data
+            return b"".join(data)
         else:
             raise KeyError(id)
 

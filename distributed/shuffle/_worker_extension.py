@@ -78,10 +78,12 @@ class ShuffleRun(Generic[T_transfer_shard_id, T_partition_id, T_partition_type])
         self.rpc = rpc
         self.scheduler = scheduler
         self.closed = False
+        import dask
 
         self._disk_buffer = DiskShardsBuffer(
             directory=directory,
             memory_limiter=memory_limiter_disk,
+            min_message_size=dask.config.get("min_message_size", -1),
         )
 
         self._comm_buffer = CommShardsBuffer(
@@ -182,7 +184,6 @@ class ShuffleRun(Generic[T_transfer_shard_id, T_partition_id, T_partition_type])
 
     async def flush_receive(self) -> None:
         self.raise_if_closed()
-        await self._disk_buffer.flush()
 
     async def close(self) -> None:
         if self.closed:  # pragma: no cover
@@ -576,13 +577,16 @@ class ShuffleWorkerExtension:
         worker.handlers["shuffle_inputs_done"] = self.shuffle_inputs_done
         worker.stream_handlers["shuffle-fail"] = self.shuffle_fail
         worker.extensions["shuffle"] = self
+        import dask
 
         # Initialize
         self.worker = worker
         self.shuffles = {}
         self._runs = set()
         self.memory_limiter_comms = ResourceLimiter(parse_bytes("100 MiB"))
-        self.memory_limiter_disk = ResourceLimiter(parse_bytes("1 GiB"))
+        self.memory_limiter_disk = ResourceLimiter(
+            parse_bytes(dask.config.get("disk_memory_limiter", "1GiB"))
+        )
         self.closed = False
         self._executor = ThreadPoolExecutor(self.worker.state.nthreads)
 

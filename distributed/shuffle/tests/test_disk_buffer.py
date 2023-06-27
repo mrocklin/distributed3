@@ -18,14 +18,15 @@ async def test_basic(tmp_path):
 
         await mf.flush()
 
+        await mf.write({"x": [b"0" * 1000], "y": [b"1" * 500]})
         x = mf.read("x")
         y = mf.read("y")
 
         with pytest.raises(KeyError):
             mf.read("z")
 
-        assert x == b"0" * 2000
-        assert y == b"1" * 1000
+        assert x == b"0" * 3000
+        assert y == b"1" * 1500
 
     assert not os.path.exists(tmp_path)
 
