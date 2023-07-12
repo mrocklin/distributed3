@@ -8,6 +8,7 @@ from distributed.shuffle._buffer import ShardsBuffer
 from distributed.shuffle._limiter import ResourceLimiter
 from distributed.utils import log_errors
 
+from dask.utils import parse_bytes
 
 class DiskShardsBuffer(ShardsBuffer):
     """Accept, buffer, and write many small objects to many files
@@ -40,14 +41,16 @@ class DiskShardsBuffer(ShardsBuffer):
 
     def __init__(
         self,
+        write,
         directory: str | pathlib.Path,
         memory_limiter: ResourceLimiter | None = None,
     ):
+        import dask
         super().__init__(
             memory_limiter=memory_limiter,
-            # Disk is not able to run concurrently atm
-            concurrency_limit=1,
+            concurrency_limit=10,
         )
+        self.__write = write
         self.directory = pathlib.Path(directory)
         self.directory.mkdir(exist_ok=True)
 
@@ -64,15 +67,7 @@ class DiskShardsBuffer(ShardsBuffer):
         future then we should consider simplifying this considerably and
         dropping the write into communicate above.
         """
-
-        with log_errors():
-            # Consider boosting total_size a bit here to account for duplication
-            with self.time("write"):
-                with open(
-                    self.directory / str(id), mode="ab", buffering=100_000_000
-                ) as f:
-                    for shard in shards:
-                        f.write(shard)
+        await self.__write(path=self.directory / str(id), shards=shards)
 
     def read(self, id: int | str) -> bytes:
         """Read a complete file back into memory"""

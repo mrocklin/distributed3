@@ -57,10 +57,14 @@ class CommShardsBuffer(ShardsBuffer):
         memory_limiter: ResourceLimiter | None = None,
         concurrency_limit: int = 10,
     ):
+        import dask
+
         super().__init__(
             memory_limiter=memory_limiter,
             concurrency_limit=concurrency_limit,
-            max_message_size=CommShardsBuffer.max_message_size,
+            max_message_size=parse_bytes(
+                dask.config.get("shuffle.comm.max_message_size", default="2 MiB")
+            ),
         )
         self.send = send
 

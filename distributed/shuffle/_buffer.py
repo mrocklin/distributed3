@@ -16,6 +16,11 @@ logger = logging.getLogger("distributed.shuffle")
 ShardType = TypeVar("ShardType", bound=Sized)
 T = TypeVar("T")
 
+import pyarrow as pa
+@sizeof.register(pa.Table)
+def pa_tab_sizeof(obj):
+    # FIXME: this is pretty expensive
+    return obj.nbytes
 
 class _List(list[T]):
     # This ensures that the distributed.protocol will not iterate over this collection

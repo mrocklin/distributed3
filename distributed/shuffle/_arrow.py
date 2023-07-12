@@ -3,11 +3,11 @@ from __future__ import annotations
 from io import BytesIO
 from typing import TYPE_CHECKING
 
+import pyarrow as pa
 from packaging.version import parse
 
 if TYPE_CHECKING:
     import pandas as pd
-    import pyarrow as pa
 
 
 def check_dtype_support(meta_input: pd.DataFrame) -> None:
@@ -70,27 +70,8 @@ def convert_partition(data: bytes, meta: pd.DataFrame) -> pd.DataFrame:
     df = table.to_pandas(self_destruct=True, types_mapper=default_types_mapper)
     return df.astype(meta.dtypes, copy=False)
 
+from dask.sizeof import sizeof
 
-def list_of_buffers_to_table(data: list[bytes]) -> pa.Table:
-    """Convert a list of arrow buffers and a schema to an Arrow Table"""
-    import pyarrow as pa
-
-    return pa.concat_tables(deserialize_table(buffer) for buffer in data)
-
-
-def serialize_table(table: pa.Table) -> bytes:
-    import io
-
-    import pyarrow as pa
-
-    stream = io.BytesIO()
-    with pa.ipc.new_stream(stream, table.schema) as writer:
-        writer.write_table(table)
-    return stream.getvalue()
-
-
-def deserialize_table(buffer: bytes) -> pa.Table:
-    import pyarrow as pa
-
-    with pa.ipc.open_stream(pa.py_buffer(buffer)) as reader:
-        return reader.read_all()
+@sizeof.register(pa.Buffer)
+def sizeof_pa_buffer(obj: pa.Buffer) -> int:
+    return obj.size

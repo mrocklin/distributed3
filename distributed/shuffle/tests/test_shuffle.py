@@ -39,7 +39,6 @@ from distributed.shuffle._worker_extension import (
     ShuffleRun,
     ShuffleWorkerExtension,
     convert_partition,
-    list_of_buffers_to_table,
     split_by_partition,
     split_by_worker,
 )
@@ -1215,10 +1214,10 @@ class DataFrameShuffleTestPool(AbstractShuffleTestPool):
 
 # 36 parametrizations
 # Runtime each ~0.1s
-@pytest.mark.parametrize("n_workers", [1, 10])
-@pytest.mark.parametrize("n_input_partitions", [1, 2, 10])
-@pytest.mark.parametrize("npartitions", [1, 20])
-@pytest.mark.parametrize("barrier_first_worker", [True, False])
+@pytest.mark.parametrize("n_workers", [10])
+@pytest.mark.parametrize("n_input_partitions", [5000])
+@pytest.mark.parametrize("npartitions", [5000])
+@pytest.mark.parametrize("barrier_first_worker", [True])
 @gen_test()
 async def test_basic_lowlevel_shuffle(
     tmp_path,

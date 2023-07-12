@@ -13,19 +13,17 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, overload
 
+import pyarrow as pa
 import toolz
 
+import dask
 from dask.context import thread_state
 from dask.utils import parse_bytes
 
 from distributed.core import PooledRPCCall
 from distributed.exceptions import Reschedule
-from distributed.protocol import to_serialize
-from distributed.shuffle._arrow import (
-    convert_partition,
-    list_of_buffers_to_table,
-    serialize_table,
-)
+from distributed.protocol.serialize import ToPickle
+from distributed.shuffle._arrow import convert_partition
 from distributed.shuffle._comms import CommShardsBuffer
 from distributed.shuffle._disk import DiskShardsBuffer
 from distributed.shuffle._limiter import ResourceLimiter
@@ -80,6 +78,7 @@ class ShuffleRun(Generic[T_transfer_shard_id, T_partition_id, T_partition_type])
         self.closed = False
 
         self._disk_buffer = DiskShardsBuffer(
+            write=self.write_to_disk,
             directory=directory,
             memory_limiter=memory_limiter_disk,
         )
@@ -120,12 +119,29 @@ class ShuffleRun(Generic[T_transfer_shard_id, T_partition_id, T_partition_type])
         # up the comm pool on scheduler side
         await self.scheduler.shuffle_barrier(id=self.id, run_id=self.run_id)
 
+    # FIXME: The level of indirection is way too high
+    async def write_to_disk(self, path, shards):
+        def _():
+            with log_errors():
+                tab = pa.concat_tables(shards)
+                with self.time("write"):
+                    # TODO: compression is trivial with this assuming the reader
+                    # also uses pyarrow to open the file
+                    with pa.output_stream(path) as fd:
+                        with pa.ipc.new_stream(fd, schema=tab.schema) as stream:
+                            stream.write_table(tab)
+
+        # TODO: CPU instrumentation is off with this
+        return await self.offload(_)
+
     async def send(
         self, address: str, shards: list[tuple[T_transfer_shard_id, bytes]]
     ) -> None:
+        class mylist(list):
+            ...
         self.raise_if_closed()
         return await self.rpc(address).shuffle_receive(
-            data=to_serialize(shards),
+            data=ToPickle(mylist(shards)),
             shuffle_id=self.id,
             run_id=self.run_id,
         )
@@ -503,11 +519,14 @@ class DataFrameShuffleRun(ShuffleRun[int, int, "pd.DataFrame"]):
             raise
 
     def _repartition_buffers(self, data: list[bytes]) -> dict[NDIndex, list[bytes]]:
-        table = list_of_buffers_to_table(data)
+        table = pa.concat_tables(data)
         groups = split_by_partition(table, self.column)
         assert len(table) == sum(map(len, groups.values()))
         del data
-        return {(k,): [serialize_table(v)] for k, v in groups.items()}
+        res = {(k,): [v] for k, v in groups.items()}
+        class mydict(dict):
+            pass
+        return mydict(res)
 
     async def add_partition(self, data: pd.DataFrame, partition_id: int) -> int:
         self.raise_if_closed()
@@ -520,7 +539,7 @@ class DataFrameShuffleRun(ShuffleRun[int, int, "pd.DataFrame"]):
                 self.column,
                 self.worker_for,
             )
-            out = {k: [(partition_id, serialize_table(t))] for k, t in out.items()}
+            out = {k: [(partition_id, t)] for k, t in out.items()}
             return out
 
         out = await self.offload(_)
@@ -585,7 +604,7 @@ class ShuffleWorkerExtension:
         self.memory_limiter_comms = ResourceLimiter(parse_bytes("100 MiB"))
         self.memory_limiter_disk = ResourceLimiter(parse_bytes("1 GiB"))
         self.closed = False
-        self._executor = ThreadPoolExecutor(self.worker.state.nthreads)
+        self._executor = ThreadPoolExecutor(self.worker.state.nthreads * 2)
 
     def __str__(self) -> str:
         return f"ShuffleWorkerExtension on {self.worker.address}"
