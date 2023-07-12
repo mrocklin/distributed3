@@ -592,16 +592,13 @@ async def test_io_loop(s):
 
 @gen_cluster(nthreads=[])
 async def test_io_loop_alternate_loop(s, loop):
-    async def main():
-        with pytest.warns(
-            DeprecationWarning,
-            match=r"The `loop` argument to `Worker` is ignored, and will be "
-            r"removed in a future release. The Worker always binds to the current loop",
-        ):
-            async with Worker(s.address, loop=loop) as w:
-                assert w.io_loop is w.loop is IOLoop.current()
-
-    await asyncio.to_thread(asyncio.run, main())
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"The `loop` argument to `Worker` is ignored, and will be "
+        r"removed in a future release. The Worker always binds to the current loop",
+    ):
+        async with Worker(s.address, loop=loop) as w:
+            assert w.io_loop is w.loop is IOLoop.current()
 
 
 @gen_cluster(client=True)

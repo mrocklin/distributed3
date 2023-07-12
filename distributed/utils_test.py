@@ -72,6 +72,7 @@ from distributed.utils import (
     iscoroutinefunction,
     log_errors,
     reset_logger_locks,
+    run_and_close_tornado,
 )
 from distributed.utils import wait_for as utils_wait_for
 from distributed.worker import WORKER_ANY_RUNNING, Worker
@@ -144,7 +145,7 @@ def loop_in_thread(cleanup):
 
         # run asyncio.run in a thread and collect exceptions from *either*
         # the loop failing to start, or failing to close
-        ran = tpe.submit(_run_and_close_tornado, run)
+        ran = tpe.submit(run_and_close_tornado, run)
         for f in concurrent.futures.as_completed((loop_started, ran)):
             if f is loop_started:
                 io_loop, stop_event = loop_started.result()
@@ -366,20 +367,6 @@ async def asyncinc(x, delay=0.02):
     return x + 1
 
 
-def _run_and_close_tornado(async_fn, /, *args, **kwargs):
-    tornado_loop = None
-
-    async def inner_fn():
-        nonlocal tornado_loop
-        tornado_loop = IOLoop.current()
-        return await async_fn(*args, **kwargs)
-
-    try:
-        return asyncio.run(inner_fn())
-    finally:
-        tornado_loop.close(all_fds=True)
-
-
 def run_scheduler(q, nputs, config, port=0, **kwargs):
     with config_for_cluster_tests(**config):
 
@@ -394,7 +381,7 @@ def run_scheduler(q, nputs, config, port=0, **kwargs):
                     q.put(scheduler.address)
                 await scheduler.finished()
 
-        _run_and_close_tornado(_)
+        run_and_close_tornado(_)
 
 
 def run_worker(q, scheduler_q, config, **kwargs):
@@ -417,7 +404,7 @@ def run_worker(q, scheduler_q, config, **kwargs):
 
             # Scheduler might've failed
             if isinstance(scheduler_addr, str):
-                _run_and_close_tornado(_)
+                run_and_close_tornado(_)
 
 
 @log_errors
@@ -437,7 +424,7 @@ def run_nanny(q, scheduler_q, config, **kwargs):
 
         # Scheduler might've failed
         if isinstance(scheduler_addr, str):
-            _run_and_close_tornado(_)
+            run_and_close_tornado(_)
 
 
 @contextmanager
@@ -690,7 +677,7 @@ def cluster(
                         if time() - start > 5:  # pragma: nocover
                             raise Exception("Timeout on cluster creation")
 
-            _run_and_close_tornado(wait_for_workers)
+            run_and_close_tornado(wait_for_workers)
 
             # avoid sending processes down to function
             yield {"address": saddr}, [
@@ -743,7 +730,7 @@ def gen_test(
             if not iscoroutinefunction(func):
                 raise RuntimeError("gen_test only works for coroutine functions.")
 
-            return _run_and_close_tornado(async_fn_outer, func, *args, **kwargs)
+            return run_and_close_tornado(async_fn_outer, func, *args, **kwargs)
 
         # Patch the signature so pytest can inject fixtures
         test_func.__signature__ = inspect.signature(func)
@@ -1097,7 +1084,7 @@ def gen_cluster(
                         return await utils_wait_for(async_fn(), timeout=timeout * 2)
                     return await async_fn()
 
-            return _run_and_close_tornado(async_fn_outer)
+            return run_and_close_tornado(async_fn_outer)
 
         # Patch the signature so pytest can inject fixtures
         orig_sig = inspect.signature(func)

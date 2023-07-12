@@ -27,7 +27,13 @@ from distributed.comm import (
 from distributed.comm.registry import backends, get_backend
 from distributed.metrics import time
 from distributed.protocol import Serialized, deserialize, serialize, to_serialize
-from distributed.utils import get_ip, get_ipv6, get_mp_context, wait_for
+from distributed.utils import (
+    get_ip,
+    get_ipv6,
+    get_mp_context,
+    run_and_close_tornado,
+    wait_for,
+)
 from distributed.utils_test import (
     gen_test,
     get_cert,
@@ -438,7 +444,7 @@ async def run_coro_in_thread(func, *args, **kwargs):
         t = asyncio.create_task(func(*args, **kwargs))
         return await wait_for(t, timeout=10)
 
-    return await asyncio.to_thread(asyncio.run, run_with_timeout())
+    return await asyncio.to_thread(run_and_close_tornado, run_with_timeout)
 
 
 @gen_test()

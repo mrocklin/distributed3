@@ -26,6 +26,7 @@ from collections.abc import (
     Callable,
     Collection,
     Container,
+    Coroutine,
     Generator,
     Iterator,
     KeysView,
@@ -58,6 +59,7 @@ except ImportError:
     resource = None  # type: ignore
 
 import tlz as toolz
+import tornado.platform.asyncio
 from tornado import gen
 from tornado.ioloop import IOLoop
 
@@ -482,6 +484,48 @@ class _CollectErrorThread:
                 del self._exception
 
 
+def run_and_close_tornado(
+    async_fn: Callable[P, Coroutine[AnyType, AnyType, T]],
+    /,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+    tornado_loop = None
+
+    async def inner_fn():
+        nonlocal tornado_loop
+        tornado_loop = IOLoop.current()
+        return await async_fn(*args, **kwargs)
+
+    try:
+        return asyncio.run(inner_fn())
+    finally:
+        if tornado_loop is not None:
+            tornado_loop.close(all_fds=True)
+
+
+# distributed.LocalCluster objects are closed using an atexit hook that calls
+# LocalCluster.close, eventually this calls the retire_workers RPC method
+# on the scheduler.
+# On the Windows ProactorEventLoop tornado also sets an atexit hook that
+# closes the AddThreadSelectorEventLoop that is managing our LocalCluster's
+# RPC socket causing the retire_workers RPC to fail.
+# because we manage the cleanup of the tornado event loop ourselves we want to
+# disable the tornado atexit hook
+# https://github.com/tornadoweb/tornado/issues/3291
+if sys.platform == "win32":
+
+    def _disable_selector_loop_atexit(loop: tornado.ioloop.IOLoop) -> None:
+        if not isinstance(loop.asyncio_loop, asyncio.ProactorEventLoop):
+            return
+        tornado.platform.asyncio._selector_loops.discard(loop.selector_loop)
+
+else:
+
+    def _disable_selector_loop_atexit(loop: tornado.ioloop.IOLoop) -> None:
+        pass
+
+
 class LoopRunner:
     """
     A helper to start and stop an IO loop in a controlled way.
@@ -563,13 +607,14 @@ class LoopRunner:
         async def amain() -> None:
             nonlocal loop
             loop = IOLoop.current()
+            _disable_selector_loop_atexit(loop)
             start_evt.set()
             await self._stop_event.wait()
 
         def run_loop() -> None:
             nonlocal start_exc
             try:
-                asyncio.run(amain())
+                run_and_close_tornado(amain)
             except BaseException as e:
                 if start_evt.is_set():
                     raise
