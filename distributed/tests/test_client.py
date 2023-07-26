@@ -5637,28 +5637,49 @@ async def test_call_stack_collections_all(c, s, a, b):
     assert result
 
 
-@pytest.mark.flaky(condition=WINDOWS, reruns=10, reruns_delay=5)
+@pytest.fixture
+def reduced_recursionlimit():
+    """Particularly on Windows, we've seen C stackoverflows crashing the
+    interpreter. The recursionlimit should protect us from this but that
+    doesn't seem to work properly.
+    """
+    if WINDOWS:
+        old = sys.getrecursionlimit()
+        sys.setrecursionlimit(500)
+        try:
+            yield
+        finally:
+            sys.setrecursionlimit(old)
+    else:
+        yield
+
+
 @gen_cluster(
     client=True,
     config={
         "distributed.worker.profile.enabled": True,
         "distributed.worker.profile.cycle": "100ms",
+        "distributed.worker.profile.interval": "50ms",
     },
 )
 async def test_profile(c, s, a, b):
+    a.scheduler_delay = 0
     futures = c.map(slowinc, range(10), delay=0.05, workers=a.address)
+
     await wait(futures)
 
     x = await c.profile(start=time() + 10, stop=time() + 20)
     assert not x["count"]
 
-    x = await c.profile(start=0, stop=time())
-    assert (
-        x["count"]
-        == sum(p["count"] for _, p in a.profile_history) + a.profile_recent["count"]
-    )
+    a.cycle_profile()
+    stop = time()
+    assert stop >= max(ts for ts, _ in a.profile_history)
+    history_counts = sum(p["count"] for ts, p in a.profile_history)
+    x = await c.profile(start=0, stop=stop)
+    assert history_counts == x["count"]
 
-    y = await c.profile(start=time() - 0.300, stop=time())
+    y = await c.profile(start=stop - 0.15, stop=stop)
+
     assert 0 < y["count"] < x["count"]
 
     assert not any(p["count"] for _, p in b.profile_history)
@@ -6499,7 +6520,7 @@ async def test_futures_of_sorted(c, s, a, b):
         "distributed.worker.profile.cycle": "10ms",
     },
 )
-async def test_profile_server(c, s, a, b):
+async def test_profile_server(c, s, a, b, reduced_recursionlimit):
     for i in range(5):
         try:
             x = c.map(slowinc, range(10), delay=0.01, workers=a.address, pure=False)

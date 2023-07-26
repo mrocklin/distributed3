@@ -2459,7 +2459,7 @@ class Worker(BaseWorker, ServerNode):
         stop = time()
         self.digest_metric("profile-duration", stop - start)
 
-    async def get_profile(
+    def get_profile(
         self,
         start=None,
         stop=None,
@@ -2468,7 +2468,9 @@ class Worker(BaseWorker, ServerNode):
     ):
         now = time() + self.scheduler_delay
         if server:
-            history = self.io_loop.profile
+            # Create a shallow copy to ensure that the deque is not mutated
+            # after/while the indices are calculated
+            history = self.io_loop.profile.copy()
         elif key is None:
             history = self.profile_history
         else:
@@ -2482,7 +2484,7 @@ class Worker(BaseWorker, ServerNode):
         if stop is None:
             istop = None
         else:
-            istop = bisect.bisect_right(history, (stop,)) + 1
+            istop = bisect.bisect_right(history, (stop,))
             if istop >= len(history):
                 istop = None  # include end
 
