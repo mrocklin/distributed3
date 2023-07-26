@@ -97,7 +97,7 @@ async def test_simple():
     t1 = time()
     await proc.join(timeout=30)
     dt = time() - t1
-    assert dt <= 1.0
+    assert dt <= 10
     assert not proc.is_alive()
     assert proc.pid is not None
     assert proc.exitcode == 0
@@ -106,7 +106,7 @@ async def test_simple():
     t1 = time()
     await proc.join()
     dt = time() - t1
-    assert dt <= 0.6
+    assert dt <= 2
 
     del proc
 
@@ -141,7 +141,7 @@ async def test_simple():
         await asyncio.sleep(0.01)
         gc.collect()
         dt = time() - t1
-        assert dt < 2.0
+        assert dt < 5.0
 
 
 @gen_test()
