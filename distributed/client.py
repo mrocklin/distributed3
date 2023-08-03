@@ -10,6 +10,7 @@ import os
 import pickle
 import re
 import sys
+import textwrap
 import threading
 import traceback
 import uuid
@@ -216,6 +217,7 @@ class Future(WrappedKey):
         self._input_state = state
         self._inform = inform
         self._state = None
+        self._lock = threading.Lock()
         self._bind_late()
 
     @property
@@ -224,37 +226,56 @@ class Future(WrappedKey):
         return self._client
 
     def _bind_late(self):
-        if not self._client:
-            try:
-                client = get_client()
-            except ValueError:
-                client = None
-            self._client = client
-        if self._client and not self._state:
-            self._client._inc_ref(self._tkey)
-            self._generation = self._client.generation
-
-            if self._tkey in self._client.futures:
-                self._state = self._client.futures[self._tkey]
-            else:
-                self._state = self._client.futures[self._tkey] = FutureState()
-
-            if self._inform:
-                self._client._send_to_scheduler(
-                    {
-                        "op": "client-desires-keys",
-                        "keys": [self._tkey],
-                        "client": self._client.id,
-                    }
-                )
-
-            if self._input_state is not None:
+        with self._lock:
+            if not self._client:
                 try:
-                    handler = self._client._state_handlers[self._input_state]
-                except KeyError:
-                    pass
+                    client = get_client()
+                except ValueError:
+                    client = None
+                self._client = client
+            if self._client and not self._state:
+                self._client._inc_ref(self._tkey)
+                self._generation = self._client.generation
+
+                if self._tkey in self._client.futures:
+                    self._state = self._client.futures[self._tkey]
                 else:
-                    handler(key=self.key)
+                    self._state = self._client.futures[self._tkey] = FutureState()
+
+                if self._inform:
+                    self._client._send_to_scheduler(
+                        {
+                            "op": "client-desires-keys",
+                            "keys": [self._tkey],
+                            "client": self._client.id,
+                        }
+                    )
+
+                if self._input_state is not None:
+                    try:
+                        handler = self._client._state_handlers[self._input_state]
+                    except KeyError:
+                        pass
+                    else:
+                        handler(key=self.key)
+            if self._client:
+                try:
+                    assert self._state is self._client.futures[self._tkey]
+                except (AssertionError, KeyError):
+                    raise RuntimeError(
+                        textwrap.dedent(
+                            """\
+                    Critical error encountered during Future initialization.
+                    This typically occurs when interacting with Future objects
+                    directly inside of a Task without initializing a Client
+                    explicitly inside of this Task first.
+                    If you encounter this, please ensure to initialize a Client
+                    object yourself before interacting with the Future object
+                    directly. See also
+                    https://distributed.dask.org/en/stable/api.html#distributed.worker_client
+                    """
+                        )
+                    )
 
     def _verify_initialized(self):
         if not self.client or not self._state:

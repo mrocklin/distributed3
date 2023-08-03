@@ -2562,11 +2562,10 @@ class Worker(BaseWorker, ServerNode):
 
     @property
     def client(self) -> Client:
-        with self._lock:
-            if self._client:
-                return self._client
-            else:
-                return self._get_client()
+        if self._client:
+            return self._client
+        else:
+            return self._get_client()
 
     def _get_client(self, timeout: float | None = None) -> Client:
         """Get local client attached to this worker
@@ -2577,54 +2576,57 @@ class Worker(BaseWorker, ServerNode):
         --------
         get_client
         """
+        with self._lock:
+            if self._client:
+                return self._client
+            if timeout is None:
+                timeout = dask.config.get("distributed.comm.timeouts.connect")
 
-        if timeout is None:
-            timeout = dask.config.get("distributed.comm.timeouts.connect")
+            timeout = parse_timedelta(timeout, "s")
 
-        timeout = parse_timedelta(timeout, "s")
+            try:
+                from distributed.client import default_client
 
-        try:
-            from distributed.client import default_client
+                client = default_client()
+            except ValueError:  # no clients found, need to make a new one
+                pass
+            else:
+                # must be lazy import otherwise cyclic import
+                from distributed.deploy.cluster import Cluster
 
-            client = default_client()
-        except ValueError:  # no clients found, need to make a new one
-            pass
-        else:
-            # must be lazy import otherwise cyclic import
-            from distributed.deploy.cluster import Cluster
+                if (
+                    client.scheduler
+                    and client.scheduler.address == self.scheduler.address
+                    # The below conditions should only happen in case a second
+                    # cluster is alive, e.g. if a submitted task spawned its onwn
+                    # LocalCluster, see gh4565
+                    or (
+                        isinstance(client._start_arg, str)
+                        and client._start_arg == self.scheduler.address
+                        or isinstance(client._start_arg, Cluster)
+                        and client._start_arg.scheduler_address
+                        == self.scheduler.address
+                    )
+                ):
+                    self._client = client
 
-            if (
-                client.scheduler
-                and client.scheduler.address == self.scheduler.address
-                # The below conditions should only happen in case a second
-                # cluster is alive, e.g. if a submitted task spawned its onwn
-                # LocalCluster, see gh4565
-                or (
-                    isinstance(client._start_arg, str)
-                    and client._start_arg == self.scheduler.address
-                    or isinstance(client._start_arg, Cluster)
-                    and client._start_arg.scheduler_address == self.scheduler.address
+            if not self._client:
+                from distributed.client import Client
+
+                asynchronous = in_async_call(self.loop)
+                self._client = Client(
+                    self.scheduler,
+                    loop=self.loop,
+                    security=self.security,
+                    set_as_default=True,
+                    asynchronous=asynchronous,
+                    direct_to_workers=True,
+                    name=f"worker-{self.name}",
+                    timeout=timeout,
                 )
-            ):
-                self._client = client
-
-        if not self._client:
-            from distributed.client import Client
-
-            asynchronous = in_async_call(self.loop)
-            self._client = Client(
-                self.scheduler,
-                loop=self.loop,
-                security=self.security,
-                set_as_default=True,
-                asynchronous=asynchronous,
-                direct_to_workers=True,
-                name="worker",
-                timeout=timeout,
-            )
-            Worker._initialized_clients.add(self._client)
-            if not asynchronous:
-                assert self._client.status == "running"
+                Worker._initialized_clients.add(self._client)
+                if not asynchronous:
+                    assert self._client.status == "running"
 
         return self._client
 
