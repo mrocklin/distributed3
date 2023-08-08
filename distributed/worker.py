@@ -81,7 +81,7 @@ from distributed.core import (
 from distributed.core import rpc as RPCType
 from distributed.core import send_recv
 from distributed.diagnostics import nvml, rmm
-from distributed.diagnostics.plugin import _get_plugin_name
+from distributed.diagnostics.plugin import WorkerPluginManager
 from distributed.diskutils import WorkSpace
 from distributed.exceptions import Reschedule
 from distributed.http import get_handlers
@@ -469,7 +469,7 @@ class Worker(BaseWorker, ServerNode):
     low_level_profiler: bool
     scheduler: PooledRPCCall
     execution_state: dict[str, Any]
-    plugins: dict[str, WorkerPlugin]
+    plugins: WorkerPluginManager
     _pending_plugins: tuple[WorkerPlugin, ...]
 
     def __init__(
@@ -659,7 +659,7 @@ class Worker(BaseWorker, ServerNode):
         self.scheduler_delay = 0
         self.stream_comms = {}
 
-        self.plugins = {}
+        self.plugins = WorkerPluginManager()
         self._pending_plugins = plugins
 
         self.services = {}
@@ -696,8 +696,8 @@ class Worker(BaseWorker, ServerNode):
             "versions": self.versions,
             "actor_execute": self.actor_execute,
             "actor_attribute": self.actor_attribute,
-            "plugin-add": self.plugin_add,
-            "plugin-remove": self.plugin_remove,
+            "plugin-add": self.plugins.add,
+            "plugin-remove": self.plugins.remove,
             "get_monitor_info": self.get_monitor_info,
             "benchmark_disk": self.benchmark_disk,
             "benchmark_memory": self.benchmark_memory,
@@ -1233,7 +1233,7 @@ class Worker(BaseWorker, ServerNode):
 
         await asyncio.gather(
             *(
-                self.plugin_add(name=name, plugin=plugin)
+                self.plugins.add(name=name, plugin=plugin)
                 for name, plugin in response["worker-plugins"].items()
             )
         )
@@ -1446,7 +1446,7 @@ class Worker(BaseWorker, ServerNode):
 
         plugins_msgs = await asyncio.gather(
             *(
-                self.plugin_add(plugin=plugin, catch_errors=False)
+                self.plugins.add(plugin=plugin, catch_errors=False)
                 for plugin in self._pending_plugins
             ),
             return_exceptions=True,
@@ -1548,12 +1548,7 @@ class Worker(BaseWorker, ServerNode):
         # Cancel async instructions
         await BaseWorker.close(self, timeout=timeout)
 
-        teardowns = [
-            plugin.teardown(self)
-            for plugin in self.plugins.values()
-            if hasattr(plugin, "teardown")
-        ]
-        await asyncio.gather(*(td for td in teardowns if isawaitable(td)))
+        await self.plugins.close()
 
         for extension in self.extensions.values():
             if hasattr(extension, "close"):
@@ -1861,57 +1856,6 @@ class Worker(BaseWorker, ServerNode):
             resources=self.state.total_resources,
             worker=self.contact_address,
         )
-
-    @log_errors
-    async def plugin_add(
-        self,
-        plugin: WorkerPlugin | bytes,
-        name: str | None = None,
-        catch_errors: bool = True,
-    ) -> dict[str, Any]:
-        if isinstance(plugin, bytes):
-            # Note: historically we have accepted duck-typed classes that don't
-            # inherit from WorkerPlugin. Don't do `assert isinstance`.
-            plugin = cast("WorkerPlugin", pickle.loads(plugin))
-
-        if name is None:
-            name = _get_plugin_name(plugin)
-
-        assert name
-
-        if name in self.plugins:
-            await self.plugin_remove(name=name)
-
-        self.plugins[name] = plugin
-
-        logger.info("Starting Worker plugin %s" % name)
-        if hasattr(plugin, "setup"):
-            try:
-                result = plugin.setup(worker=self)
-                if isawaitable(result):
-                    result = await result
-            except Exception as e:
-                if not catch_errors:
-                    raise
-                msg = error_message(e)
-                return cast("dict[str, Any]", msg)
-
-        return {"status": "OK"}
-
-    @log_errors
-    async def plugin_remove(self, name: str) -> dict[str, Any]:
-        logger.info(f"Removing Worker plugin {name}")
-        try:
-            plugin = self.plugins.pop(name)
-            if hasattr(plugin, "teardown"):
-                result = plugin.teardown(worker=self)
-                if isawaitable(result):
-                    result = await result
-        except Exception as e:
-            msg = error_message(e)
-            return cast("dict[str, Any]", msg)
-
-        return {"status": "OK"}
 
     def handle_worker_status_change(self, status: str, stimulus_id: str) -> None:
         new_status = Status.lookup[status]  # type: ignore

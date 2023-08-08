@@ -5187,7 +5187,7 @@ class Client(SyncMethodMixin):
         # note that subscription is idempotent
         self.subscribe_topic(topic, self._handle_forwarded_log_record)
         # note that any existing plugin with the same name will automatically be
-        # removed and torn down (see distributed.worker.Worker.plugin_add()), so
+        # removed and torn down (see distributed.worker.PluginManager.add()), so
         # this is effectively idempotent, i.e., forwarding the same logger twice
         # won't cause every LogRecord to be forwarded twice
         return self.register_worker_plugin(

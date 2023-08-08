@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import contextlib
 import functools
 import logging
@@ -10,10 +11,15 @@ import subprocess
 import sys
 import uuid
 import zipfile
-from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Any, ClassVar
+from collections.abc import Awaitable, Iterator, Mapping
+from inspect import isawaitable
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from dask.utils import funcname, tmpfile
+
+from distributed.core import error_message
+from distributed.protocol import pickle
+from distributed.utils import log_errors
 
 if TYPE_CHECKING:
     from distributed.scheduler import Scheduler, TaskStateState  # circular imports
@@ -869,3 +875,116 @@ class ForwardOutput(WorkerPlugin):
 
     def teardown(self, worker):
         self._exit_stack.close()
+
+
+class WorkerPluginManager(Mapping[str, WorkerPlugin]):
+    _plugins: dict[str, WorkerPlugin]
+    _closed: bool
+    _closed_event: asyncio.Event
+
+    def __init__(self):
+        self._plugins = {}
+        self._closed = False
+        self._closed_event = asyncio.Event()
+
+    @log_errors
+    async def add(
+        self,
+        plugin: WorkerPlugin | bytes,
+        name: str | None = None,
+        catch_errors: bool = True,
+    ) -> dict[str, Any]:
+        if self._closed:
+            raise RuntimeError(
+                "Trying to add a wplugin to an already closed plugin manager."
+            )
+
+        if isinstance(plugin, bytes):
+            # Note: historically we have accepted duck-typed classes that don't
+            # inherit from WorkerPlugin. Don't do `assert isinstance`.
+            plugin = cast("WorkerPlugin", pickle.loads(plugin))
+
+        if name is None:
+            name = _get_plugin_name(plugin)
+
+        assert name
+
+        if name in self._plugins:
+            await self.remove(name=name)
+
+        self._plugins[name] = plugin
+
+        logger.info("Starting Worker plugin %s" % name)
+        if hasattr(plugin, "setup"):
+            try:
+                result = plugin.setup(worker=self)
+                if isawaitable(result):
+                    result = await result
+            except Exception as e:
+                if not catch_errors:
+                    raise
+                msg = error_message(e)
+                return cast("dict[str, Any]", msg)
+
+        return {"status": "OK"}
+
+    @log_errors
+    async def remove(self, name: str) -> dict[str, Any]:
+        logger.info(f"Removing Worker plugin {name}")
+        if self._closed:
+            raise RuntimeError(
+                "Trying to add a plugin to an already closed plugin manager."
+            )
+        try:
+            plugin = self._plugins.pop(name)
+            if hasattr(plugin, "teardown"):
+                result = plugin.teardown(worker=self)
+                if isawaitable(result):
+                    result = await result
+        except Exception as e:
+            msg = error_message(e)
+            return cast("dict[str, Any]", msg)
+
+        return {"status": "OK"}
+
+    def transition(self, key: str, start: str, finish: str, **kwargs: Any) -> None:
+        for name, plugin in self._plugins.items():
+            if hasattr(plugin, "transition"):
+                try:
+                    plugin.transition(key=key, start=start, finish=finish, **kwargs)
+                except Exception:
+                    logger.info(
+                        "Plugin '%s' failed to transition with exception",
+                        name,
+                        exc_info=True,
+                    )
+
+    async def close(self) -> None:
+        if self._closed:
+            await self._closed_event.wait()
+            return
+
+        # TODO: Don't fail
+        teardowns = [
+            plugin.teardown(self)
+            for plugin in self._plugins.values()
+            if hasattr(plugin, "teardown")
+        ]
+
+        await asyncio.gather(*(td for td in teardowns if isawaitable(td)))
+        self._closed_event.set()
+
+    def __getitem__(self, key: str) -> WorkerPlugin:
+        return self._plugins[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._plugins)
+
+    def __len__(self) -> int:
+        return len(self._plugins)
+
+    async def __aenter__(self) -> "WorkerPluginManager":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        await self.close()

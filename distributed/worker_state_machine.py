@@ -47,6 +47,7 @@ from distributed._stories import worker_story
 from distributed.collections import HeapSet
 from distributed.comm import get_address_host
 from distributed.core import ErrorMessage, error_message
+from distributed.diagnostics.plugin import WorkerPluginManager
 from distributed.metrics import DelayedMetricsLedger, monotonic, time
 from distributed.protocol import pickle
 from distributed.protocol.serialize import Serialize
@@ -63,7 +64,6 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
     # Circular imports
-    from distributed.diagnostics.plugin import WorkerPlugin
     from distributed.worker import Worker
 
 # Not to be confused with distributed.scheduler.TaskStateState
@@ -1122,11 +1122,11 @@ class WorkerState:
     #: :class:`~distributed.worker_memory.WorkerMemoryManager`, and this class.
     data: MutableMapping[str, object]
 
-    #: ``{name: worker plugin}``. This collection is shared by reference between
+    #: ``{name: worker plugin}``. This plugin manager is shared by reference between
     #: :class:`~distributed.worker.Worker` and this class. The Worker managed adding and
-    #: removing plugins, while the WorkerState invokes the ``WorkerPlugin.transition``
-    #: method, is available.
-    plugins: dict[str, WorkerPlugin]
+    #: removing plugins, while the WorkerState invokes the ``PluginManager.transition``
+    #: method.
+    plugins: WorkerPluginManager
 
     #: Priority heap of tasks that are ready to run and have no resource constrains.
     #: Mutually exclusive with :attr:`constrained`.
@@ -1294,7 +1294,7 @@ class WorkerState:
         address: str | None = None,
         data: MutableMapping[str, object] | None = None,
         threads: dict[str, int] | None = None,
-        plugins: dict[str, WorkerPlugin] | None = None,
+        plugins: WorkerPluginManager | None = None,
         resources: Mapping[str, float] | None = None,
         transfer_incoming_count_limit: int = 9999,
         validate: bool = True,
@@ -1313,7 +1313,7 @@ class WorkerState:
         # For the sake of convenience, create independent ones during unit tests.
         self.data = data if data is not None else {}
         self.threads = threads if threads is not None else {}
-        self.plugins = plugins if plugins is not None else {}
+        self.plugins = plugins if plugins is not None else WorkerPluginManager()
         self.total_resources = dict(resources) if resources is not None else {}
         self.available_resources = self.total_resources.copy()
 
@@ -2573,16 +2573,6 @@ class WorkerState:
         ("waiting", "released"): _transition_generic_released,
     }
 
-    def _notify_plugins(self, method_name: str, *args: Any, **kwargs: Any) -> None:
-        for name, plugin in self.plugins.items():
-            if hasattr(plugin, method_name):
-                try:
-                    getattr(plugin, method_name)(*args, **kwargs)
-                except Exception:
-                    logger.info(
-                        "Plugin '%s' failed with exception", name, exc_info=True
-                    )
-
     def _transition(
         self,
         ts: TaskState,
@@ -2621,7 +2611,7 @@ class WorkerState:
 
         if func is not None:
             recs, instructions = func(self, ts, *args, stimulus_id=stimulus_id)
-            self._notify_plugins("transition", ts.key, start, finish)
+            self.plugins.transition(ts.key, start, finish)
 
         elif "released" not in (start, finish):
             # start -> "released" -> finish
