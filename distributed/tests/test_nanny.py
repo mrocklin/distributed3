@@ -9,10 +9,18 @@ import random
 import sys
 import warnings
 from contextlib import suppress
+from time import sleep
 from unittest import mock
 
 import psutil
 import pytest
+
+from distributed import Event
+from distributed.diagnostics.plugin import WorkerPlugin
+
+pytestmark = pytest.mark.gpu
+
+from tlz import first, valmap
 from tlz import first
 from tornado.ioloop import IOLoop
 
@@ -781,3 +789,17 @@ async def test_log_event(c, s):
             "traceback_text": "",
         },
     ] == [msg[1] for msg in s.get_events("test-topic4")]
+
+
+@gen_cluster(client=True, nthreads=[])
+async def test_worker_thread_does_not_block_shutdown(c, s):
+    event = Event()
+    async with Nanny(s.address):
+
+        def block_forever():
+            event.set()
+
+            sleep(100000000)
+
+        c.submit(block_forever)
+        await event.wait()

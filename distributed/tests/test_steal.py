@@ -1237,7 +1237,7 @@ async def test_steal_worker_dies_same_ip(c, s, w0, w1):
 
     assert victim_ts.processing_on != wsB
 
-    await w_new.close(executor_wait=False)
+    await w_new.close()
     await ev.set()
     await c.gather(futs1)
 

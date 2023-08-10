@@ -68,6 +68,8 @@ async def test_add_remove_worker(s):
     await b
     await a.close()
     await b.close()
+    while any(w.address in s.workers for w in [a, b]):
+        await asyncio.sleep(0.01)
 
     assert events == [
         ("add_worker", a.address),
@@ -168,7 +170,10 @@ async def test_async_add_remove_worker(s):
 
     async with Worker(s.address) as a:
         async with Worker(s.address) as b:
-            pass
+            addresses = [a.address, b.address]
+
+    while any(w in s.workers for w in addresses):
+        await asyncio.sleep(0.01)
 
     assert len(events) == 4
     assert set(events) == {

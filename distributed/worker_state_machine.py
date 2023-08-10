@@ -3775,19 +3775,18 @@ class BaseWorker(abc.ABC):
             else:
                 raise TypeError(inst)  # pragma: nocover
 
-    async def close(self, timeout: float = 30) -> None:
+    async def close(self) -> None:
         """Cancel all asynchronous instructions"""
         if not self._async_instructions:
             return
-        for task in self._async_instructions:
-            task.cancel()
-        # async tasks can handle cancellation and could take an arbitrary amount
-        # of time to terminate
-        _, pending = await asyncio.wait(self._async_instructions, timeout=timeout)
-        for task in pending:
-            logger.error(
-                f"Failed to cancel asyncio task after {timeout} seconds: {task}"
-            )
+        pending_to_cancel = self._async_instructions
+        while pending_to_cancel:
+            for task in self._async_instructions:
+                task.cancel()
+            # async tasks can handle cancellation and could take an arbitrary amount
+            # of time to terminate
+            _, pending = await asyncio.wait(self._async_instructions, timeout=0.1)
+            pending_to_cancel.update(pending)
 
     @abc.abstractmethod
     def batched_send(self, msg: dict[str, Any]) -> None:

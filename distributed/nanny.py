@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection
 from inspect import isawaitable
 from queue import Empty
 from time import sleep as sync_sleep
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal
 
 from toolz import merge
 from tornado.ioloop import IOLoop
@@ -792,7 +792,7 @@ class WorkerProcess:
     async def kill(
         self,
         timeout: float = 2,
-        executor_wait: bool = True,
+        executor_wait: Any = None,
         reason: str = "workerprocess-kill",
     ) -> None:
         """
@@ -804,8 +804,12 @@ class WorkerProcess:
         If the worker process does not terminate within ``timeout`` seconds,
         even after being killed, `asyncio.TimeoutError` is raised.
         """
+        if executor_wait is not None:  # pragma: nocover
+            warnings.warn(
+                "`executor_wait` has no functionality and will be removed in a future version",
+                FutureWarning,
+            )
         deadline = time() + timeout
-
         if self.status == Status.stopped:
             return
         if self.status == Status.stopping:
@@ -829,14 +833,7 @@ class WorkerProcess:
         queue = self.child_stop_q
         assert queue
         wait_timeout = timeout * 0.8
-        queue.put(
-            {
-                "op": "stop",
-                "timeout": wait_timeout,
-                "executor_wait": executor_wait,
-                "reason": reason,
-            }
-        )
+        queue.put({"op": "stop", "reason": reason})
         await asyncio.sleep(0)  # otherwise we get broken pipe errors
         queue.close()
         del queue
@@ -892,16 +889,9 @@ class WorkerProcess:
         async def do_stop(
             *,
             worker: Worker,
-            timeout: float = 5,
-            executor_wait: bool = True,
             reason: str = "workerprocess-stop",
         ) -> None:
-            await worker.close(
-                nanny=False,
-                executor_wait=executor_wait,
-                timeout=timeout,
-                reason=reason,
-            )
+            await worker.close(nanny=False, reason=reason)
 
         def watch_stop_q(loop: IOLoop, worker: Worker) -> None:
             """

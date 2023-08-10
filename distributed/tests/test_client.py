@@ -926,7 +926,8 @@ async def test_remove_worker(c, s, a, b):
 
     await b.close()
 
-    assert b.address not in s.workers
+    while b.address in s.workers:
+        await asyncio.sleep(0.01)
 
     result = await c.gather(L)
     assert result == list(map(inc, range(20)))

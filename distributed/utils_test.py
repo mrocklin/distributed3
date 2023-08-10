@@ -121,7 +121,7 @@ NO_AMM = {"distributed.scheduler.active-memory-manager.start": False}
 
 async def cleanup_global_workers():
     for worker in Worker._instances:
-        await worker.close(executor_wait=False)
+        await worker.close()
 
 
 @pytest.fixture
@@ -1751,7 +1751,7 @@ def check_instances():
 
     for w in Worker._instances:
         with suppress(RuntimeError):  # closed IOLoop
-            w.loop.add_callback(w.close, executor_wait=False)
+            w.loop.add_callback(w.close)
             if w.status in WORKER_ANY_RUNNING:
                 w.loop.add_callback(w.close)
     Worker._instances.clear()

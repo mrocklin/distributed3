@@ -27,8 +27,6 @@ from collections.abc import (
     MutableMapping,
 )
 from concurrent.futures import Executor
-from contextlib import suppress
-from datetime import timedelta
 from functools import wraps
 from inspect import isawaitable
 from typing import (
@@ -66,7 +64,7 @@ from distributed.comm import Comm, connect, get_address_host, parse_address
 from distributed.comm import resolve_address as comm_resolve_address
 from distributed.comm.addressing import address_from_user_args
 from distributed.comm.utils import OFFLOAD_THRESHOLD
-from distributed.compatibility import PeriodicCallback
+from distributed.compatibility import PeriodicCallback, randbytes
 from distributed.core import (
     ConnectionPool,
     PooledRPCCall,
@@ -101,7 +99,6 @@ from distributed.utils import (
     get_ip,
     has_arg,
     in_async_call,
-    is_python_shutting_down,
     iscoroutinefunction,
     json_load_robust,
     log_errors,
@@ -236,8 +233,8 @@ async def _force_close(self, reason: str):
     2.  If it doesn't, log and kill the process
     """
     try:
-        await wait_for(
-            self.close(nanny=False, executor_wait=False, reason=reason),
+        await asyncio.wait_for(
+            self.close(nanny=False, reason=reason),
             30,
         )
     except (KeyboardInterrupt, SystemExit):  # pragma: nocover
@@ -1490,8 +1487,8 @@ class Worker(BaseWorker, ServerNode):
     @log_errors
     async def close(  # type: ignore
         self,
-        timeout: float = 30,
-        executor_wait: bool = True,
+        timeout: Any = None,
+        executor_wait: Any = None,
         nanny: bool = True,
         reason: str = "worker-close",
     ) -> str | None:
@@ -1554,19 +1551,26 @@ class Worker(BaseWorker, ServerNode):
             logger.info("Stopping worker. Reason: %s", reason)
         if self.status not in WORKER_ANY_RUNNING:
             logger.info("Closed worker has not yet started: %s", self.status)
-        if not executor_wait:
-            logger.info("Not waiting on executor to close")
+        if executor_wait is not None:  # pragma: nocover
+            warnings.warn(
+                "`executor_wait` has no functionality and will be removed in a future version",
+                FutureWarning,
+            )
+        if timeout is not None:  # pragma: nocover
+            warnings.warn(
+                "timeout has no functionality and will be removed in a future version",
+                FutureWarning,
+            )
 
         # This also informs the scheduler about the status update
         self.status = Status.closing
-        setproctitle("dask worker [closing]")
 
         if nanny and self.nanny:
             with self.rpc(self.nanny) as r:
                 await r.close_gracefully(reason=reason)
 
         # Cancel async instructions
-        await BaseWorker.close(self, timeout=timeout)
+        await BaseWorker.close(self)
 
         teardowns = [
             plugin.teardown(self)
@@ -1574,6 +1578,23 @@ class Worker(BaseWorker, ServerNode):
             if hasattr(plugin, "teardown")
         ]
         await asyncio.gather(*(td for td in teardowns if isawaitable(td)))
+
+        for extension in self.extensions.values():
+            if hasattr(extension, "close"):
+                result = extension.close()
+                if isawaitable(result):
+                    await result
+
+        self.stop_services()
+
+        for preload in self.preloads:
+            try:
+                await preload.teardown()
+            except Exception:
+                logger.exception("Failed to tear down preload")
+
+        for pc in self.periodic_callbacks.values():
+            pc.stop()
 
         for extension in self.extensions.values():
             if hasattr(extension, "close"):
@@ -1646,42 +1667,13 @@ class Worker(BaseWorker, ServerNode):
         self.batched_send({"op": "close-stream"})
 
         if self.batched_stream:
-            with suppress(TimeoutError):
-                await self.batched_stream.close(timedelta(seconds=timeout))
+            await self.batched_stream.close()
 
         for executor in self.executors.values():
             if executor is utils._offload_executor:
                 continue  # Never shutdown the offload executor
 
-            def _close(executor, wait):
-                if isinstance(executor, ThreadPoolExecutor):
-                    executor._work_queue.queue.clear()
-                    executor.shutdown(wait=wait, timeout=timeout)
-                else:
-                    executor.shutdown(wait=wait)
-
-            # Waiting for the shutdown can block the event loop causing
-            # weird deadlocks particularly if the task that is executing in
-            # the thread is waiting for a server reply, e.g. when using
-            # worker clients, semaphores, etc.
-            if is_python_shutting_down():
-                # If we're shutting down there is no need to wait for daemon
-                # threads to finish
-                _close(executor=executor, wait=False)
-            else:
-                try:
-                    await asyncio.to_thread(
-                        _close, executor=executor, wait=executor_wait
-                    )
-                except RuntimeError:  # Are we shutting down the process?
-                    logger.error(
-                        "Could not close executor %r by dispatching to thread. Trying synchronously.",
-                        executor,
-                        exc_info=True,
-                    )
-                    _close(
-                        executor=executor, wait=executor_wait
-                    )  # Just run it directly
+            executor.shutdown(wait=False)
 
         self.stop()
         self.status = Status.closed

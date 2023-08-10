@@ -2475,7 +2475,8 @@ async def test_async_context_manager():
         async with Worker(s.address) as w:
             assert w.status == Status.running
             assert s.workers
-        assert not s.workers
+        while s.workers:
+            await asyncio.sleep(0.1)
 
 
 @gen_test()
@@ -3779,7 +3780,8 @@ async def test_rebalance_dead_recipient(client, s, a, b, c):
     x_ts = s.tasks[x.key]
     y_ts = s.tasks[y.key]
     await c.close()
-    assert s.workers.keys() == {a.address, b.address}
+    while s.workers.keys() != {a.address, b.address}:
+        await asyncio.sleep(0.01)
 
     out = await s._rebalance_move_data(
         [(a_ws, b_ws, x_ts), (a_ws, c_ws, y_ts)], stimulus_id="test"
@@ -3831,7 +3833,8 @@ async def test_delete_worker_data_bad_worker(s, a, b):
     e.g. a sender died in the middle of rebalance()
     """
     await a.close()
-    assert s.workers.keys() == {b.address}
+    while s.workers.keys() != {b.address}:
+        await asyncio.sleep(0.01)
     await s.delete_worker_data(a.address, ["x"], stimulus_id="test")
 
 
@@ -4214,7 +4217,7 @@ async def test_ensure_events_dont_include_taskstate_objects(c, s, a, b):
     while not a.state.tasks:
         await asyncio.sleep(0.1)
 
-    await a.close(executor_wait=False)
+    await a.close()
     await event.set()
     await c.gather(futs)
 

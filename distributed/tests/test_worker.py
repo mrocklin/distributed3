@@ -365,7 +365,7 @@ async def test_worker_waits_for_scheduler():
     task.cancel()
 
     assert w.status not in (Status.closed, Status.running, Status.paused)
-    await w.close(timeout=0.1)
+    await asyncio.wait_for(w.close(), 0.1)
 
 
 @gen_cluster(client=True, nthreads=[("127.0.0.1", 1)])
@@ -1582,27 +1582,30 @@ async def test_close_gracefully(c, s, a, b):
 @gen_cluster(client=True, nthreads=[("", 1)])
 async def test_close_while_executing(c, s, a, sync):
     ev = Event()
+    ev2 = Event()
 
     if sync:
 
-        def f(ev):
+        def f(ev, ev2):
             ev.set()
-            sleep(2)
+            ev2.wait()
 
     else:
 
-        async def f(ev):
+        async def f(ev, ev2):
             await ev.set()
-            await asyncio.Event().wait()  # Block indefinitely
+            await ev2.wait()  # Block indefinitely
 
-    f1 = c.submit(f, ev, key="f1")
+    f1 = c.submit(f, ev, ev2, key="f1")
     await ev.wait()
     task = next(
         task for task in asyncio.all_tasks() if "execute(f1)" in task.get_name()
     )
     await a.close()
-    assert task.done()
-    assert s.tasks["f1"].state in ("queued", "no-worker")
+    assert task.cancelled()
+    while s.tasks["f1"].state not in ("queued", "no-worker"):
+        await asyncio.sleep(0.1)
+    await ev2.set()
 
 
 @pytest.mark.slow
@@ -1622,15 +1625,12 @@ async def test_close_async_task_handles_cancellation(c, s, a):
     task = next(
         task for task in asyncio.all_tasks() if "execute(f1)" in task.get_name()
     )
-    with captured_logger(
-        "distributed.worker.state_machine", level=logging.ERROR
-    ) as logger:
-        await wait_for(a.close(timeout=1), timeout=5)
-    assert "Failed to cancel asyncio task" in logger.getvalue()
-    assert not task.cancelled()
-    assert s.tasks["f1"].state in ("queued", "no-worker")
-    task.cancel()
-    await asyncio.wait({task})
+    start = time()
+    await a.close()
+    assert time() - start < 5
+    assert task.cancelled()
+    while s.tasks["f1"].state not in ("queued", "no-worker"):
+        await asyncio.sleep(0.01)
 
 
 @pytest.mark.slow
@@ -3575,6 +3575,9 @@ async def test_broken_comm(c, s, a, b):
 
 @gen_cluster(nthreads=[])
 async def test_do_not_block_event_loop_during_shutdown(s):
+    # An earlier implementation of Close blocked the event loop during
+    # threadpool closing. This was removed by now but closing should not block,
+    # ever, so the test is still OK
     loop = asyncio.get_running_loop()
     called_handler = threading.Event()
     block_handler = threading.Event()
@@ -3601,8 +3604,7 @@ async def test_do_not_block_event_loop_during_shutdown(s):
 
     async def close():
         called_handler.wait()
-        # executor_wait is True by default but we want to be explicit here
-        await w.close(executor_wait=True)
+        await w.close()
 
     await asyncio.gather(block(), close(), set_future())
 
