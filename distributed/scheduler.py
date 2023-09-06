@@ -83,7 +83,11 @@ from distributed.comm.addressing import addresses_from_user_args
 from distributed.compatibility import PeriodicCallback
 from distributed.core import Status, clean_exception, error_message, rpc, send_recv
 from distributed.diagnostics.memory_sampler import MemorySamplerExtension
-from distributed.diagnostics.plugin import SchedulerPlugin, _get_plugin_name
+from distributed.diagnostics.plugin import (
+    SchedulerPlugin,
+    _get_plugin_name,
+    validate_scheduler_plugin,
+)
 from distributed.event import EventExtension
 from distributed.http import get_handlers
 from distributed.lock import LockExtension
@@ -5784,9 +5788,10 @@ class Scheduler(SchedulerState, ServerNode):
                 "arbitrary bytestrings using pickle via the "
                 "'distributed.scheduler.pickle' configuration setting."
             )
-        if not isinstance(plugin, SchedulerPlugin):
+        if isinstance(plugin, bytes):
             plugin = loads(plugin)
-            assert isinstance(plugin, SchedulerPlugin)
+        validate_scheduler_plugin(plugin)
+        plugin = cast(SchedulerPlugin, plugin)
 
         if name is None:
             name = _get_plugin_name(plugin)

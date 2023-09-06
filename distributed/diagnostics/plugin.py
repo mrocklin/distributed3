@@ -314,6 +314,72 @@ def _get_plugin_name(plugin: SchedulerPlugin | WorkerPlugin | NannyPlugin) -> st
         return funcname(type(plugin)) + "-" + str(uuid.uuid4())
 
 
+def validate_nanny_plugin(plugin: Any) -> None:
+    if not isinstance(plugin, NannyPlugin):
+        if isinstance(plugin, WorkerPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a nanny plugin; "
+                "found it to be a worker plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_worker_plugin(..., nanny=False)`."
+            )
+        if isinstance(plugin, SchedulerPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a nanny plugin; "
+                "found it to be a scheduler plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_scheduler_plugin(...)`."
+            )
+        raise TypeError(
+            f"Excepted {plugin} to be a nanny plugin. "
+            "Please make sure to subclass `NannyPlugin` when creating a custom nanny plugin."
+        )
+
+
+def validate_scheduler_plugin(plugin: Any) -> None:
+    if not isinstance(plugin, SchedulerPlugin):
+        if isinstance(plugin, NannyPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a scheduler plugin; "
+                "found it to be a nanny plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_worker_plugin(..., nanny=True)`."
+            )
+        if isinstance(plugin, WorkerPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a scheduler plugin; "
+                "found it to be a worker plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_worker_plugin(..., nanny=False)`."
+            )
+        raise TypeError(
+            f"Excepted {plugin} to be a scheduler plugin. "
+            "Please make sure to subclass `SchedulerPlugin` when creating a custom scheduler plugin."
+        )
+
+
+def validate_worker_plugin(plugin: Any) -> None:
+    if not isinstance(plugin, WorkerPlugin):
+        if isinstance(plugin, NannyPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a worker plugin; "
+                "found it to be a scheduler plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_worker_plugin(..., nanny=True)`."
+            )
+        if isinstance(plugin, SchedulerPlugin):
+            raise TypeError(
+                f"Expected {plugin} to be a worker plugin; "
+                "found it to be a scheduler plugin instead. "
+                "Consider registering the plugin with "
+                "`Client.register_scheduler_plugin`."
+            )
+        raise TypeError(
+            f"Excepted {plugin} to be a worker plugin. "
+            "Please make sure to subclass `WorkerPlugin` when creating a custom worker plugin."
+        )
+
+
 class SchedulerUploadFile(SchedulerPlugin):
     name = "upload_file"
 

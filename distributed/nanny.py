@@ -15,7 +15,7 @@ import weakref
 from collections.abc import Callable, Collection
 from inspect import isawaitable
 from queue import Empty
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from toolz import merge
 from tornado.ioloop import IOLoop
@@ -38,7 +38,11 @@ from distributed.core import (
     coerce_to_address,
     error_message,
 )
-from distributed.diagnostics.plugin import _get_plugin_name
+from distributed.diagnostics.plugin import (
+    NannyPlugin,
+    _get_plugin_name,
+    validate_nanny_plugin,
+)
 from distributed.metrics import time
 from distributed.node import ServerNode
 from distributed.process import AsyncProcess
@@ -61,9 +65,6 @@ from distributed.worker_memory import (
     DeprecatedMemoryMonitor,
     NannyMemoryManager,
 )
-
-if TYPE_CHECKING:
-    from distributed.diagnostics.plugin import NannyPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -455,9 +456,17 @@ class Nanny(ServerNode):
         return result
 
     @log_errors
-    async def plugin_add(self, plugin=None, name=None):
+    async def plugin_add(
+        self, plugin: bytes | NannyPlugin, name: str | None = None
+    ) -> dict[str, Any]:
         if isinstance(plugin, bytes):
             plugin = pickle.loads(plugin)
+        try:
+            validate_nanny_plugin(plugin)
+            plugin = cast(NannyPlugin, plugin)
+        except Exception as e:
+            msg = error_message(e)
+            return cast(dict[str, Any], msg)
 
         if name is None:
             name = _get_plugin_name(plugin)
@@ -474,7 +483,8 @@ class Nanny(ServerNode):
                     result = await result
             except Exception as e:
                 msg = error_message(e)
-                return msg
+                return cast(dict[str, Any], msg)
+
         if getattr(plugin, "restart", False):
             await self.restart(reason=f"nanny-plugin-{name}-restart")
 

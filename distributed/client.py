@@ -79,6 +79,9 @@ from distributed.diagnostics.plugin import (
     UploadFile,
     WorkerPlugin,
     _get_plugin_name,
+    validate_nanny_plugin,
+    validate_scheduler_plugin,
+    validate_worker_plugin,
 )
 from distributed.metrics import time
 from distributed.objects import HasWhat, SchedulerInfo, WhoHas
@@ -4836,6 +4839,7 @@ class Client(SyncMethodMixin):
         idempotent : bool
             Do not re-register if a plugin of the given name already exists.
         """
+        validate_scheduler_plugin(plugin)
         if name is None:
             name = _get_plugin_name(plugin)
 
@@ -4906,8 +4910,10 @@ class Client(SyncMethodMixin):
 
     async def _register_worker_plugin(self, plugin=None, name=None, nanny=None):
         if nanny or nanny is None and isinstance(plugin, NannyPlugin):
+            validate_nanny_plugin(plugin)
             method = self.scheduler.register_nanny_plugin
         else:
+            validate_worker_plugin(plugin)
             method = self.scheduler.register_worker_plugin
 
         responses = await method(plugin=dumps(plugin), name=name)

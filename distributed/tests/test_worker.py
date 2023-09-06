@@ -464,7 +464,7 @@ async def test_base_exception_in_task(c, s, a, sync, exc_type):
 
 @gen_test()
 async def test_plugin_exception():
-    class MyPlugin:
+    class MyPlugin(WorkerPlugin):
         def setup(self, worker=None):
             raise ValueError("Setup failed")
 
@@ -478,11 +478,11 @@ async def test_plugin_exception():
 
 @gen_test()
 async def test_plugin_multiple_exceptions():
-    class MyPlugin1:
+    class MyPlugin1(WorkerPlugin):
         def setup(self, worker=None):
             raise ValueError("MyPlugin1 Error")
 
-    class MyPlugin2:
+    class MyPlugin2(WorkerPlugin):
         def setup(self, worker=None):
             raise RuntimeError("MyPlugin2 Error")
 

@@ -188,7 +188,7 @@ async def test_dependent_tasks(c, s, w):
 
 @gen_cluster(nthreads=[("127.0.0.1", 1)], client=True)
 async def test_empty_plugin(c, s, w):
-    class EmptyPlugin:
+    class EmptyPlugin(WorkerPlugin):
         pass
 
     await c.register_worker_plugin(EmptyPlugin())
@@ -268,3 +268,18 @@ async def test_WorkerPlugin_overwrite(c, s, w):
 
     await c.submit(inc, 0)
     assert w.bar == 456
+
+
+@gen_cluster(client=True, nthreads=[("", 1)])
+async def test_duck_typed_plugin_is_not_allowed(c, s, a):
+    class DuckPlugin:
+        def setup(self, worker):
+            pass
+
+        def teardown(self, worker):
+            pass
+
+    n_existing_plugins = len(a.plugins)
+    with pytest.raises(TypeError, match="subclass `WorkerPlugin`"):
+        await c.register_worker_plugin(DuckPlugin())
+    assert len(a.plugins) == n_existing_plugins

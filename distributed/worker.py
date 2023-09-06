@@ -77,7 +77,11 @@ from distributed.core import (
 from distributed.core import rpc as RPCType
 from distributed.core import send_recv
 from distributed.diagnostics import nvml, rmm
-from distributed.diagnostics.plugin import _get_plugin_name
+from distributed.diagnostics.plugin import (
+    WorkerPlugin,
+    _get_plugin_name,
+    validate_worker_plugin,
+)
 from distributed.diskutils import WorkSpace
 from distributed.exceptions import Reschedule
 from distributed.http import get_handlers
@@ -155,7 +159,6 @@ if TYPE_CHECKING:
 
     # Circular imports
     from distributed.client import Client
-    from distributed.diagnostics.plugin import WorkerPlugin
     from distributed.nanny import Nanny
     from distributed.scheduler import T_runspec
 
@@ -1850,13 +1853,18 @@ class Worker(BaseWorker, ServerNode):
         catch_errors: bool = True,
     ) -> dict[str, Any]:
         if isinstance(plugin, bytes):
-            # Note: historically we have accepted duck-typed classes that don't
-            # inherit from WorkerPlugin. Don't do `assert isinstance`.
-            plugin = cast("WorkerPlugin", pickle.loads(plugin))
+            plugin = pickle.loads(plugin)
+        try:
+            validate_worker_plugin(plugin)
+            plugin = cast(WorkerPlugin, plugin)
+        except Exception as e:
+            if not catch_errors:
+                raise
+            msg = error_message(e)
+            return cast(dict[str, Any], msg)
 
         if name is None:
             name = _get_plugin_name(plugin)
-
         assert name
 
         if name in self.plugins:

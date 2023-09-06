@@ -13,7 +13,7 @@ from tornado.httpclient import AsyncHTTPClient
 
 from dask.system import CPU_COUNT
 
-from distributed import Client, LocalCluster, Nanny, Worker, get_client
+from distributed import Client, LocalCluster, Nanny, Worker, WorkerPlugin, get_client
 from distributed.compatibility import LINUX, asyncio_run
 from distributed.config import get_loop_factory
 from distributed.core import Status
@@ -1241,7 +1241,7 @@ async def test_connect_to_closed_cluster():
         Client(cluster, asynchronous=True)
 
 
-class MyPlugin:
+class MyPlugin(WorkerPlugin):
     def setup(self, worker=None):
         import my_nonexistent_library  # noqa
 
