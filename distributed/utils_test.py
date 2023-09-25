@@ -65,6 +65,8 @@ from distributed.security import Security
 from distributed.utils import (
     Deadline,
     DequeHandler,
+    EventHandler,
+    TimeoutError,
     _offload_executor,
     get_ip,
     get_ipv6,
@@ -1785,6 +1787,7 @@ def check_instances():
 
     Nanny._instances.clear()
     DequeHandler.clear_all_instances()
+    EventHandler.remove_all_instances()
 
 
 @contextmanager

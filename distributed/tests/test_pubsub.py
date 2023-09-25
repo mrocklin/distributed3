@@ -9,7 +9,7 @@ import tlz as toolz
 
 from distributed import Pub, Sub, TimeoutError, get_worker, wait
 from distributed.metrics import time
-from distributed.utils_test import gen_cluster
+from distributed.utils_test import async_poll_for, gen_cluster
 
 
 @gen_cluster(client=True)
@@ -169,3 +169,18 @@ async def test_basic(c, s, a, b):
 
         assert len(r) == 5
         assert all(r[i] < r[i + 1] for i in range(0, 4)), r
+
+
+@gen_cluster(client=True)
+async def test_async_sub_get_on_worker(c, s, a, b):
+    async def consume():
+        sub = Sub("a")
+        return await sub.get()
+
+    async def publish():
+        pub = Pub("a")
+        await async_poll_for(lambda: s.extensions["pubsub"].subscribers, timeout=3)
+        pub.put("hello")
+
+    result, _ = await asyncio.gather(c.submit(consume), publish())
+    assert result == "hello"

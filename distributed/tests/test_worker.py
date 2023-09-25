@@ -3788,3 +3788,37 @@ async def test_startstops(c, s, a, b):
         < ss[1]["stop"]
         < t1 + b.scheduler_delay
     )
+
+
+@gen_cluster(client=True)
+async def test_exception_to_events_handler(c, s, a, b):
+    def raise_exc(*args, **kwargs):
+        raise RuntimeError()
+
+    a.handlers["raise_exception"] = raise_exc
+
+    received = None
+    received_count = 0
+
+    def handler(record):
+        nonlocal received, received_count
+        received = record
+        received_count += 1
+
+    c.subscribe_topic("ERROR", handler)
+
+    while not s.event_subscriber["ERROR"]:
+        await asyncio.sleep(0.01)
+    rpc = s.rpc(a.address)
+    try:
+        await rpc.raise_exception()
+    except Exception:
+        pass
+
+    while not received:
+        await asyncio.sleep(0.01)
+    _, msg = received
+    assert msg == "Exception while handling op raise_exception"
+    assert received_count == 1
+    assert len(s.events["logs"]) == 1
+    assert len(s.events["ERROR"]) == 1

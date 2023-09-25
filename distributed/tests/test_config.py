@@ -327,6 +327,7 @@ def test_schema_is_complete():
         "distributed.nanny.environ",
         "distributed.nanny.pre-spawn-environ",
         "distributed.comm.ucx.environment",
+        "distributed.admin.log-events",
     }
 
     def test_matches(c, s, root):

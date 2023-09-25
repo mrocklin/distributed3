@@ -1139,6 +1139,11 @@ properties:
               The log format to emit.
 
               See https://docs.python.org/3/library/logging.html#logrecord-attributes
+          log-events:
+            type: object
+            description: |
+              Configure a logging handler for all listed loggers to forward records to the internal event system.
+
           event-loop:
             type: string
             description: |

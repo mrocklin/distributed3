@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import functools
-import threading
 from collections.abc import Awaitable, Generator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -119,11 +119,14 @@ class Actor(WrappedKey):
                 return ProxyRPC(self._client.scheduler, self._address)
 
     @property
-    def _asynchronous(self):
+    def _asynchronous(self) -> bool:
         if self._client:
             return self._client.asynchronous
-        else:
-            return threading.get_ident() == self._worker.thread_id
+        try:
+            asyncio_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return self._worker.loop.asyncio_loop is asyncio_loop
 
     def _sync(self, func, *args, **kwargs):
         if self._client:

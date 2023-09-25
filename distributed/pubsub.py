@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import weakref
 from collections import defaultdict, deque
 
@@ -440,12 +439,16 @@ class Sub:
         timeout = parse_timedelta(timeout)
         if self.client:
             return self.client.sync(self._get, timeout=timeout)
-        elif self.worker.thread_id == threading.get_ident():
-            return self._get()
+        try:
+            asyncio_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         else:
-            if self.buffer:  # fastpath
-                return self.buffer.popleft()
-            return sync(self.loop, self._get, timeout=timeout)
+            if self.worker.loop.asyncio_loop is asyncio_loop:
+                return self._get()
+        if self.buffer:  # fastpath
+            return self.buffer.popleft()
+        return sync(self.loop, self._get, timeout=timeout)
 
     next = __next__ = get
 

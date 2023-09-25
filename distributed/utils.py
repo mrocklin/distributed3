@@ -46,7 +46,7 @@ from time import sleep
 from types import ModuleType
 from typing import TYPE_CHECKING
 from typing import Any as AnyType
-from typing import ClassVar, TypeVar, overload
+from typing import ClassVar, Protocol, TypeVar, overload
 
 import click
 import psutil
@@ -89,8 +89,9 @@ logger = _logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    # TODO: import from typing (requires Python >=3.10)
-    from typing_extensions import ParamSpec
+    # TODO: import from typing (ParamSpec requires Python >=3.10)
+    # TODO: import from typing (Self requires Python >=3.10)
+    from typing_extensions import ParamSpec, Self
 
     P = ParamSpec("P")
     T = TypeVar("T")
@@ -1191,6 +1192,36 @@ def json_load_robust(fn, load=json.load, timeout=None):
         sleep(0.1)
     else:
         raise TimeoutError(f"Could not load file after {timeout}s.")
+
+
+class SupportsLogEvent(Protocol):
+    def log_event(self, topic: list[str], msg: str) -> object:
+        ...
+
+
+class EventHandler(logging.Handler):
+    _instances: ClassVar[weakref.WeakSet[Self]] = weakref.WeakSet()
+
+    def __init__(self, level: str | int, server: SupportsLogEvent) -> None:
+        self.server = weakref.ref(server)
+
+        self.loggers: list[logging.Logger] = []
+        super().__init__(level)
+        EventHandler._instances.add(self)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        server = self.server()
+        if server:
+            server.log_event(["logs", record.levelname], record.getMessage())
+
+    def addLogger(self, logger: logging.Logger) -> None:
+        self.loggers.append(logger)
+
+    @classmethod
+    def remove_all_instances(cls) -> None:
+        for handler in EventHandler._instances:
+            for logger in handler.loggers:
+                logger.removeHandler(handler)
 
 
 class DequeHandler(logging.Handler):

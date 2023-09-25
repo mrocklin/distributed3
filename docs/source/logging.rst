@@ -68,3 +68,5 @@ the event was logged.
 
 When combined with scheduler and worker plugins, the structured events system can produce
 rich logging / diagnostic systems.
+
+It is possible to feed stdlib logging records into this system as well using the options in ``distributed.log-events``. The logs are collected in a dedicated topic per log level, e.g. ``ERROR`` and a global ``logs`` topic.
