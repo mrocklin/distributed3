@@ -162,7 +162,20 @@ class P2PShuffleLayer(Layer):
             self.parts_out = set(range(self.npartitions))
         self.npartitions_input = npartitions_input
         annotations = annotations or {}
-        annotations.update({"shuffle": lambda key: key[1]})
+
+        def _priority(key: tuple | str) -> int:
+            if key[0].startswith(self.name):
+                return -1
+            if key[0].startswith("shuffle-transfer"):
+                return 1
+            return 0
+
+        annotations.update(
+            {
+                "shuffle": lambda key: key[1],
+                "priority": _priority,
+            }
+        )
         super().__init__(annotations=annotations)
 
     def __repr__(self) -> str:
