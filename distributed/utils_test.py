@@ -36,6 +36,7 @@ from tornado.ioloop import IOLoop
 
 import dask
 from dask.typing import Key
+from dask.utils import parse_bytes
 
 from distributed import Event, Scheduler, system
 from distributed import versions as version_module
@@ -2569,9 +2570,8 @@ class SizeOf:
     An object that returns exactly nbytes when inspected by dask.sizeof.sizeof
     """
 
-    def __init__(self, nbytes: int) -> None:
-        if not isinstance(nbytes, int):
-            raise TypeError(f"Expected integer for nbytes but got {type(nbytes)}")
+    def __init__(self, nbytes: int | str) -> None:
+        nbytes = parse_bytes(nbytes)
         if nbytes < _size_obj:
             raise ValueError(
                 f"Expected a value larger than {_size_obj} integer but got {nbytes}."

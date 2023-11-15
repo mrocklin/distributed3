@@ -53,6 +53,7 @@ from tlz import (
 from tornado.ioloop import IOLoop
 
 import dask
+import dask.config
 from dask.core import get_deps, validate_key
 from dask.typing import Key, no_default
 from dask.utils import (
@@ -188,6 +189,8 @@ DEFAULT_EXTENSIONS = {
     "spans": SpansSchedulerExtension,
     "stealing": WorkStealing,
 }
+LATENCY_PENALTY = dask.config.get("distributed.scheduler.latency-penalty", 0.25)
+CONSIDER_HAS_WHAT = dask.config.get("distributed.scheduler.consider-has-what", False)
 
 
 class ClientState:
@@ -3089,11 +3092,36 @@ class SchedulerState:
         Minimize expected start time.  If a tie then break with data storage.
         """
         comm_bytes = sum(
-            dts.get_nbytes() for dts in ts.dependencies if ws not in dts.who_has
+            dts.get_nbytes()
+            for dts in ts.dependencies
+            if (
+                ws not in dts.who_has
+                and (not CONSIDER_HAS_WHAT or dts not in ws.needs_what)
+            )
         )
 
         stack_time = ws.occupancy / ws.nthreads
         start_time = stack_time + comm_bytes / self.bandwidth
+
+        if comm_bytes:
+            # Generous latency/overhead penalty (empiric)
+            # -------------------------------------------
+            # There are numerous factors to consider that affect primarily small
+            # transfers
+            # - Network latency
+            # - Event loop delay on both sides
+            # - Cold ConnectionPools (e.g. TCP+Dask handshake amplify above)
+            # We cannot accurately measure this and therefore just apply a
+            # general penalty to suppress network transfers a little
+            #
+            # Note: This coincides with DEFAULT_TASK_DURATION / nthreads==2
+            # This means that a 2 Thread worker with one task is a tie on
+            # start_time with a worker with zero tasks but a trivial transfer
+            start_time += LATENCY_PENALTY
+
+        # Differences below 10ms are meaningless and we should rather break ties
+        # by nbytes
+        start_time = round(start_time, 2)
 
         if ts.actor:
             return (len(ws.actors), start_time, ws.nbytes)
@@ -8273,10 +8301,6 @@ def decide_worker(
     """
     Decide which worker should take task *ts*.
 
-    We choose the worker that has the data on which *ts* depends.
-
-    If several workers have dependencies then we choose the less-busy worker.
-
     Optionally provide *valid_workers* of where jobs are allowed to occur
     (if all workers are allowed to take the task, pass None instead).
 
@@ -8286,21 +8310,11 @@ def decide_worker(
     *objective* function.
     """
     assert all(dts.who_has for dts in ts.dependencies)
-    if ts.actor:
-        candidates = all_workers.copy()
-    else:
-        candidates = {wws for dts in ts.dependencies for wws in dts.who_has}
-        candidates &= all_workers
-    if valid_workers is None:
-        if not candidates:
-            candidates = all_workers.copy()
-    else:
-        candidates &= valid_workers
-        if not candidates:
-            candidates = valid_workers
-            if not candidates:
-                if ts.loose_restrictions:
-                    return decide_worker(ts, all_workers, None, objective)
+    candidates = set(all_workers)
+    if valid_workers is not None:
+        candidates = valid_workers
+        if not candidates and ts.loose_restrictions:
+            return decide_worker(ts, all_workers, None, objective)
 
     if not candidates:
         return None
