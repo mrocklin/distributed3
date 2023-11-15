@@ -70,6 +70,7 @@ class ArrayRechunkTestPool(AbstractShuffleTestPool):
             run_id=next(AbstractShuffleTestPool._shuffle_run_id_iterator),
             local_address=name,
             executor=self._executor,
+            io_executor=self._executor,
             rpc=self,
             scheduler=self,
             memory_limiter_disk=ResourceLimiter(10000000),
@@ -1193,7 +1194,7 @@ async def test_rechunk_in_memory_shards_dont_share_buffer(c, s, a, b):
 
     [run] = a.extensions["shuffle"].shuffle_runs._runs
     shards = [
-        s3 for s1 in run._disk_buffer._shards.values() for s2 in s1 for _, s3 in s2
+        s3 for s1 in run._storage_buffer.shards.values() for s2 in s1 for _, s3 in s2
     ]
     assert shards
 

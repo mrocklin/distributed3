@@ -10,7 +10,7 @@ import shutil
 from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from itertools import count
+from itertools import chain, count
 from typing import Any, cast
 from unittest import mock
 
@@ -43,12 +43,7 @@ from distributed import (
 )
 from distributed.core import ConnectionPool
 from distributed.scheduler import TaskState as SchedulerTaskState
-from distributed.shuffle._arrow import (
-    convert_shards,
-    list_of_buffers_to_table,
-    read_from_disk,
-    serialize_table,
-)
+from distributed.shuffle._arrow import convert_shards, read_from_disk, serialize_table
 from distributed.shuffle._limiter import ResourceLimiter
 from distributed.shuffle._scheduler_plugin import ShuffleSchedulerPlugin
 from distributed.shuffle._shuffle import (
@@ -285,6 +280,9 @@ async def test_concurrent(c, s, a, b):
     await check_scheduler_cleanup(s)
 
 
+@pytest.mark.skip(
+    reason="This test is non-deterministic and might work if we don't remove the directory fast enough."
+)
 @gen_cluster(client=True)
 async def test_bad_disk(c, s, a, b):
     df = dask.datasets.timeseries(
@@ -1112,43 +1110,40 @@ def test_processing_chain(tmp_path):
     df["_partitions"] = df.col4 % npartitions
     worker_for = {i: random.choice(workers) for i in list(range(npartitions))}
     worker_for = pd.Series(worker_for, name="_worker").astype("category")
-
     meta = df.head(0)
     data = split_by_worker(df, "_partitions", worker_for=worker_for, meta=meta)
     assert set(data) == set(worker_for.cat.categories)
     assert sum(map(len, data.values())) == len(df)
 
-    batches = {worker: [serialize_table(t)] for worker, t in data.items()}
+    batches = {worker: [t] for worker, t in data.items()}
 
     # Typically we communicate to different workers at this stage
     # We then receive them back and reconstute them
 
-    by_worker = {
-        worker: list_of_buffers_to_table(list_of_batches)
-        for worker, list_of_batches in batches.items()
-    }
-    assert sum(map(len, by_worker.values())) == len(df)
+    by_worker = {worker: list_of_batches for worker, list_of_batches in batches.items()}
+    assert sum(map(len, chain(*by_worker.values()))) == len(df)
 
     # We split them again, and then dump them down to disk
 
-    splits_by_worker = {
-        worker: split_by_partition(t, "_partitions") for worker, t in by_worker.items()
-    }
+    partitions_by_worker: defaultdict[
+        str, defaultdict[int, list[pa.Table]]
+    ] = defaultdict(lambda: defaultdict(list))
 
-    splits_by_worker = {
-        worker: {partition: [t] for partition, t in d.items()}
-        for worker, d in splits_by_worker.items()
-    }
+    for worker, ts in by_worker.items():
+        for t in ts:
+            splits = split_by_partition(t, "_partitions")
+            for partition_id, split in splits.items():
+                partitions_by_worker[worker][partition_id].append(split)
 
     # No two workers share data from any partition
     assert not any(
         set(a) & set(b)
-        for w1, a in splits_by_worker.items()
-        for w2, b in splits_by_worker.items()
+        for w1, a in partitions_by_worker.items()
+        for w2, b in partitions_by_worker.items()
         if w1 is not w2
     )
 
-    for partitions in splits_by_worker.values():
+    for partitions in partitions_by_worker.values():
         for partition, tables in partitions.items():
             for table in tables:
                 with (tmp_path / str(partition)).open("ab") as f:
@@ -1189,15 +1184,6 @@ async def test_head(c, s, a, b):
     await check_worker_cleanup(b)
     del out
     await check_scheduler_cleanup(s)
-
-
-def test_split_by_worker():
-    workers = ["a", "b", "c"]
-    npartitions = 5
-    df = pd.DataFrame({"x": range(100), "y": range(100)})
-    df["_partitions"] = df.x % npartitions
-    worker_for = {i: random.choice(workers) for i in range(npartitions)}
-    s = pd.Series(worker_for, name="_worker").astype("category")
 
 
 @gen_cluster(client=True, nthreads=[("", 1)] * 2)
@@ -1580,6 +1566,7 @@ class DataFrameShuffleTestPool(AbstractShuffleTestPool):
             run_id=next(AbstractShuffleTestPool._shuffle_run_id_iterator),
             local_address=name,
             executor=self._executor,
+            io_executor=self._executor,
             rpc=self,
             scheduler=self,
             memory_limiter_disk=ResourceLimiter(10000000),

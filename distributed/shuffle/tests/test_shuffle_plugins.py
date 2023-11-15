@@ -96,6 +96,7 @@ def test_split_by_worker_many_workers():
         )
     worker_for = pd.Series(worker_for_mapping, name="_workers").astype("category")
     out = split_by_worker(df, "_partition", meta, worker_for)
+
     assert _get_worker_for_range_sharding(npartitions, 5, workers) in out
     assert _get_worker_for_range_sharding(npartitions, 0, workers) in out
     assert _get_worker_for_range_sharding(npartitions, 7, workers) in out

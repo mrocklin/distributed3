@@ -7,6 +7,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,11 +25,11 @@ from distributed.exceptions import Reschedule
 from distributed.shuffle._arrow import (
     check_dtype_support,
     check_minimal_arrow_version,
+    concat_tables,
     convert_shards,
-    deserialize_table,
-    list_of_buffers_to_table,
+    copy_table,
     read_from_disk,
-    serialize_table,
+    write_to_disk,
 )
 from distributed.shuffle._core import (
     NDIndex,
@@ -294,10 +295,7 @@ class P2PShuffleLayer(Layer):
 
 
 def split_by_worker(
-    df: pd.DataFrame,
-    column: str,
-    meta: pd.DataFrame,
-    worker_for: pd.Series,
+    df: pd.DataFrame, column: str, meta: pd.DataFrame, worker_for: pd.Series
 ) -> dict[Any, pa.Table]:
     """
     Split data into many arrow batches, partitioned by destination worker
@@ -310,20 +308,23 @@ def split_by_worker(
     constructor = df._constructor_sliced
     assert isinstance(constructor, type)
     worker_for = constructor(worker_for)
-    df = df.merge(
-        right=worker_for.cat.codes.rename("_worker"),
-        left_on=column,
-        right_index=True,
-        how="inner",
+
+    df = (
+        worker_for.cat.codes.rename("_worker")
+        .sort_values()
+        .to_frame()
+        .merge(
+            right=df,
+            right_on=column,
+            left_index=True,
+            how="inner",
+        )
     )
+    assert df["_worker"].is_monotonic_increasing
     nrows = len(df)
     if not nrows:
         return {}
-    # assert len(df) == nrows  # Not true if some outputs aren't wanted
-    # FIXME: If we do not preserve the index something is corrupting the
-    # bytestream such that it cannot be deserialized anymore
-    t = to_pyarrow_table_dispatch(df, preserve_index=True)
-    t = t.sort_by("_worker")
+    t = to_pyarrow_table_dispatch(df)
     codes = np.asarray(t["_worker"])
     t = t.drop(["_worker"])
     del df
@@ -354,7 +355,6 @@ def split_by_partition(t: pa.Table, column: str) -> dict[int, pa.Table]:
 
     partitions = t.select([column]).to_pandas()[column].unique()
     partitions.sort()
-    t = t.sort_by(column)
 
     partition = np.asarray(t[column])
     splits = np.where(partition[1:] != partition[:-1])[0] + 1
@@ -364,6 +364,7 @@ def split_by_partition(t: pa.Table, column: str) -> dict[int, pa.Table]:
         t.slice(offset=a, length=b - a) for a, b in toolz.sliding_window(2, splits)
     ]
     shards.append(t.slice(offset=splits[-1], length=None))
+    shards = [copy_table(shard) for shard in shards]
     assert len(t) == sum(map(len, shards))
     assert len(partitions) == len(shards)
     return dict(zip(partitions, shards))
@@ -410,7 +411,6 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
 
     column: str
     meta: pd.DataFrame
-    partitions_of: dict[str, list[int]]
     worker_for: pd.Series
 
     def __init__(
@@ -423,6 +423,7 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
         local_address: str,
         directory: str,
         executor: ThreadPoolExecutor,
+        io_executor: ThreadPoolExecutor,
         rpc: Callable[[str], PooledRPCCall],
         scheduler: PooledRPCCall,
         memory_limiter_disk: ResourceLimiter,
@@ -438,6 +439,7 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
             local_address=local_address,
             directory=directory,
             executor=executor,
+            io_executor=io_executor,
             rpc=rpc,
             scheduler=scheduler,
             memory_limiter_comms=memory_limiter_comms,
@@ -473,12 +475,23 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
             self._exception = e
             raise
 
-    def _repartition_buffers(self, data: list[bytes]) -> dict[NDIndex, bytes]:
-        table = list_of_buffers_to_table(data)
-        groups = split_by_partition(table, self.column)
-        assert len(table) == sum(map(len, groups.values()))
-        del data
-        return {(k,): serialize_table(v) for k, v in groups.items()}
+    def _repartition_buffers(
+        self, data: list[pa.Table]
+    ) -> dict[NDIndex, tuple[pa.Table, int]]:
+        nrows = sum(map(len, data))
+        shards: defaultdict[int, list[Any]] = defaultdict(lambda: [[], 0])
+        while data:
+            table = data.pop()
+            metadata_size = sizeof(table.schema.metadata)
+            groups = split_by_partition(table, self.column)
+            for key, shard in groups.items():
+                shards[key][0].append(shard)
+                shards[key][1] += metadata_size + shard.nbytes
+        actual = sum(map(len, chain(*toolz.pluck(0, shards.values()))))
+        assert actual == nrows
+        return {
+            (k,): (concat_tables(shards), size) for k, (shards, size) in shards.items()
+        }
 
     def _shard_partition(
         self,
@@ -492,7 +505,8 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
             self.meta,
             self.worker_for,
         )
-        out = {k: (partition_id, serialize_table(t)) for k, t in out.items()}
+        del data
+        out = {k: (partition_id, t) for k, t in out.items()}
         return out
 
     def _get_output_partition(
@@ -510,11 +524,11 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
     def _get_assigned_worker(self, id: int) -> str:
         return self.worker_for[id]
 
+    def write(self, data: list[pd.DataFrame], path: Path) -> int:
+        return write_to_disk(data, path)
+
     def read(self, path: Path) -> tuple[pa.Table, int]:
         return read_from_disk(path)
-
-    def deserialize(self, buffer: Any) -> Any:
-        return deserialize_table(buffer)
 
 
 @dataclass(frozen=True)
@@ -542,12 +556,11 @@ class DataFrameShuffleSpec(ShuffleSpec[int]):
                 f"shuffle-{self.id}-{run_id}",
             ),
             executor=plugin._executor,
+            io_executor=plugin._io_executor,
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             scheduler=plugin.worker.scheduler,
-            memory_limiter_disk=plugin.memory_limiter_disk
-            if self.disk
-            else ResourceLimiter(None),
+            memory_limiter_disk=plugin.memory_limiter_disk,
             memory_limiter_comms=plugin.memory_limiter_comms,
             disk=self.disk,
             loop=plugin.worker.loop,

@@ -106,6 +106,7 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from toolz import concat
 from tornado.ioloop import IOLoop
 
 import dask
@@ -123,7 +124,7 @@ from distributed.shuffle._core import (
     handle_unpack_errors,
 )
 from distributed.shuffle._limiter import ResourceLimiter
-from distributed.shuffle._pickle import unpickle_bytestream
+from distributed.shuffle._pickle import pickle_bytelist, unpickle_bytestream
 from distributed.shuffle._scheduler_plugin import ShuffleSchedulerPlugin
 from distributed.shuffle._shuffle import barrier_key, shuffle_barrier
 from distributed.shuffle._worker_plugin import ShuffleWorkerPlugin
@@ -338,6 +339,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
         local_address: str,
         directory: str,
         executor: ThreadPoolExecutor,
+        io_executor: ThreadPoolExecutor,
         rpc: Callable[[str], PooledRPCCall],
         scheduler: PooledRPCCall,
         memory_limiter_disk: ResourceLimiter,
@@ -351,6 +353,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
             local_address=local_address,
             directory=directory,
             executor=executor,
+            io_executor=io_executor,
             rpc=rpc,
             scheduler=scheduler,
             memory_limiter_comms=memory_limiter_comms,
@@ -374,15 +377,17 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
         self.raise_if_closed()
 
         # Repartition shards and filter out already received ones
-        shards = defaultdict(list)
+        shards: defaultdict[NDIndex, list[Any]] = defaultdict(lambda: [[], 0])
         for d in data:
             id1, payload = d
             if id1 in self.received:
                 continue
             self.received.add(id1)
             for id2, shard in payload:
-                shards[id2].append(shard)
-            self.total_recvd += sizeof(d)
+                shards[id2][0].append(shard)
+                size = sizeof(shard)
+                shards[id2][1] += size
+        self.total_recvd += sizeof(d)
         del data
         if not shards:
             return
@@ -423,11 +428,16 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
         data = self._read_from_disk(partition_id)
         # Copy the memory-mapped buffers from disk into memory.
         # This is where we'll spend most time.
-        with self._disk_buffer.time("read"):
+        with self._storage_buffer.time("read"):
             return convert_chunk(data)
 
-    def deserialize(self, buffer: Any) -> Any:
-        return buffer
+    def write(self, data: list[Any], path: Path) -> int:
+        frames = concat(pickle_bytelist(shard) for shard in data)
+
+        with path.open(mode="ab") as f:
+            start = f.tell()
+            f.writelines(frames)
+            return f.tell() - start
 
     def read(self, path: Path) -> tuple[list[list[tuple[NDIndex, np.ndarray]]], int]:
         """Open a memory-mapped file descriptor to disk, read all metadata, and unpickle
@@ -478,6 +488,7 @@ class ArrayRechunkSpec(ShuffleSpec[NDIndex]):
                 f"shuffle-{self.id}-{run_id}",
             ),
             executor=plugin._executor,
+            io_executor=plugin._io_executor,
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             scheduler=plugin.worker.scheduler,

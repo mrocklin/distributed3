@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING
 
 from packaging.version import parse
 
-from dask.utils import parse_bytes
-
 if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
@@ -44,6 +42,23 @@ def check_minimal_arrow_version() -> None:
         raise ImportError(
             f"P2P shuffling requires pyarrow>={minversion} but only found {pa.__version__}"
         )
+
+
+def combine_tables(tables: Iterable[pa.Table], deep_copy: bool = True) -> pa.Table:
+    table = concat_tables(tables)
+    if deep_copy:
+        return copy_table(table)
+    return table.combine_chunks()
+
+
+def copy_table(table: pa.Table) -> pa.Table:
+    """Creates a deep-copy of the table"""
+    import pyarrow as pa
+
+    # concat_arrays forced a deep-copy even if the input arrays only have a single chunk.
+    return pa.table(
+        [concat_arrays(column.chunks) for column in table.columns], schema=table.schema
+    )
 
 
 def concat_tables(tables: Iterable[pa.Table]) -> pa.Table:
@@ -87,13 +102,6 @@ def convert_shards(shards: list[pa.Table], meta: pd.DataFrame) -> pd.DataFrame:
     return df.astype(reconciled_dtypes, copy=False)
 
 
-def list_of_buffers_to_table(data: list[bytes]) -> pa.Table:
-    """Convert a list of arrow buffers and a schema to an Arrow Table"""
-
-    tables = (deserialize_table(buffer) for buffer in data)
-    return concat_tables(tables)
-
-
 def serialize_table(table: pa.Table) -> bytes:
     import pyarrow as pa
 
@@ -103,39 +111,34 @@ def serialize_table(table: pa.Table) -> bytes:
     return stream.getvalue().to_pybytes()
 
 
-def deserialize_table(buffer: bytes) -> pa.Table:
+def write_to_disk(data: list[pa.Table], path: Path) -> int:
     import pyarrow as pa
 
-    with pa.ipc.open_stream(pa.py_buffer(buffer)) as reader:
-        return reader.read_all()
+    table = combine_tables(data)
+    del data
+
+    with path.open(mode="ab") as f:
+        start = f.tell()
+        with pa.ipc.new_stream(f, table.schema) as writer:
+            writer.write_table(table)
+        return f.tell() - start
 
 
 def read_from_disk(path: Path) -> tuple[list[pa.Table], int]:
     import pyarrow as pa
 
-    batch_size = parse_bytes("1 MiB")
-    batch = []
     shards = []
 
     with pa.OSFile(str(path), mode="rb") as f:
         size = f.seek(0, whence=2)
         f.seek(0)
-        prev = 0
-        offset = f.tell()
-        while offset < size:
+        while f.tell() < size:
             sr = pa.RecordBatchStreamReader(f)
             shard = sr.read_all()
-            offset = f.tell()
-            batch.append(shard)
+            shards.append(shard)
 
-            if offset - prev >= batch_size:
-                table = concat_tables(batch)
-                shards.append(_copy_table(table))
-                batch = []
-                prev = offset
-    if batch:
-        table = concat_tables(batch)
-        shards.append(_copy_table(table))
+    if shards:
+        shards = [combine_tables(shards)]
     return shards, size
 
 
@@ -152,10 +155,3 @@ def concat_arrays(arrays: Iterable[pa.Array]) -> pa.Array:
                 "P2P shuffling requires pyarrow>=12.0.0 to support extension types."
             ) from e
         raise
-
-
-def _copy_table(table: pa.Table) -> pa.Table:
-    import pyarrow as pa
-
-    arrs = [concat_arrays(column.chunks) for column in table.columns]
-    return pa.table(data=arrs, schema=table.schema)
