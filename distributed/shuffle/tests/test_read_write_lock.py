@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from distributed.shuffle._disk import ReadWriteLock
+from distributed.shuffle._storage import ReadWriteLock
 
 
 def read(

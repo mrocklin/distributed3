@@ -20,16 +20,15 @@ from tornado.ioloop import IOLoop
 import dask.config
 from dask.core import flatten
 from dask.typing import Key
-from dask.utils import parse_timedelta
+from dask.utils import parse_bytes, parse_timedelta
 
 from distributed.core import PooledRPCCall
 from distributed.exceptions import Reschedule
 from distributed.protocol import to_serialize
 from distributed.shuffle._comms import CommShardsBuffer
-from distributed.shuffle._disk import DiskShardsBuffer
 from distributed.shuffle._exceptions import ShuffleClosedError
 from distributed.shuffle._limiter import ResourceLimiter
-from distributed.shuffle._memory import MemoryShardsBuffer
+from distributed.shuffle._storage import StorageBuffer
 from distributed.utils import sync
 from distributed.utils_comm import retry
 
@@ -60,7 +59,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
     rpc: Callable[[str], PooledRPCCall]
     scheduler: PooledRPCCall
     closed: bool
-    _disk_buffer: DiskShardsBuffer | MemoryShardsBuffer
+    _storage_buffer: StorageBuffer
     _comm_buffer: CommShardsBuffer
     diagnostics: dict[str, float]
     received: set[_T_partition_id]
@@ -81,6 +80,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         local_address: str,
         directory: str,
         executor: ThreadPoolExecutor,
+        io_executor: ThreadPoolExecutor,
         rpc: Callable[[str], PooledRPCCall],
         scheduler: PooledRPCCall,
         memory_limiter_disk: ResourceLimiter,
@@ -95,17 +95,22 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         self.rpc = rpc
         self.scheduler = scheduler
         self.closed = False
-        if disk:
-            self._disk_buffer = DiskShardsBuffer(
-                directory=directory,
-                read=self.read,
-                memory_limiter=memory_limiter_disk,
-            )
-        else:
-            self._disk_buffer = MemoryShardsBuffer(deserialize=self.deserialize)
+        self._storage_buffer = StorageBuffer(
+            directory=directory,
+            write=self.write,
+            read=self.read,
+            memory_limiter=memory_limiter_disk if disk else ResourceLimiter(None),
+            executor=io_executor,
+        )
 
+        message_bytes_limit = parse_bytes(
+            dask.config.get("distributed.p2p.comm.message-bytes-limit")
+        )
         self._comm_buffer = CommShardsBuffer(
-            send=self.send, memory_limiter=memory_limiter_comms
+            send=self.send,
+            memory_limiter=memory_limiter_comms,
+            message_bytes_limit=message_bytes_limit,
+            concurrency_limit=io_executor._max_workers,
         )
         # TODO: reduce number of connections to number of workers
         # MultiComm.max_connections = min(10, n_workers)
@@ -166,15 +171,15 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
     async def send(
         self, address: str, shards: list[tuple[_T_partition_id, Any]]
     ) -> None:
-        if _mean_shard_size(shards) < 65536:
-            # Don't send buffers individually over the tcp comms.
-            # Instead, merge everything into an opaque bytes blob, send it all at once,
-            # and unpickle it on the other side.
-            # Performance tests informing the size threshold:
-            # https://github.com/dask/distributed/pull/8318
-            shards_or_bytes: list | bytes = pickle.dumps(shards)
-        else:
-            shards_or_bytes = shards
+        # if _mean_shard_size(shards) < 65536:
+        # Don't send buffers individually over the tcp comms.
+        # Instead, merge everything into an opaque bytes blob, send it all at once,
+        # and unpickle it on the other side.
+        # Performance tests informing the size threshold:
+        # https://github.com/dask/distributed/pull/8318
+        # shards_or_bytes: list | bytes = pickle.dumps(shards)
+        # else:
+        shards_or_bytes = shards
 
         return await retry(
             partial(self._send, address, shards_or_bytes),
@@ -196,21 +201,21 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         comm_heartbeat = self._comm_buffer.heartbeat()
         comm_heartbeat["read"] = self.total_recvd
         return {
-            "disk": self._disk_buffer.heartbeat(),
+            "disk": self._storage_buffer.heartbeat(),
             "comm": comm_heartbeat,
             "diagnostics": self.diagnostics,
             "start": self.start_time,
         }
 
     async def _write_to_comm(
-        self, data: dict[str, tuple[_T_partition_id, Any]]
+        self, data: dict[str, list[tuple[_T_partition_id, Any]]]
     ) -> None:
         self.raise_if_closed()
         await self._comm_buffer.write(data)
 
     async def _write_to_disk(self, data: dict[NDIndex, Any]) -> None:
         self.raise_if_closed()
-        await self._disk_buffer.write(
+        await self._storage_buffer.write(
             {"_".join(str(i) for i in k): v for k, v in data.items()}
         )
 
@@ -225,7 +230,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         self.transferred = True
         await self._flush_comm()
         try:
-            self._comm_buffer.raise_on_exception()
+            self._comm_buffer.raise_if_erred()
         except Exception as e:
             self._exception = e
             raise
@@ -236,7 +241,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
 
     async def flush_receive(self) -> None:
         self.raise_if_closed()
-        await self._disk_buffer.flush()
+        await self._storage_buffer.flush()
 
     async def close(self) -> None:
         if self.closed:  # pragma: no cover
@@ -245,7 +250,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
 
         self.closed = True
         await self._comm_buffer.close()
-        await self._disk_buffer.close()
+        await self._storage_buffer.close()
         self._closed_event.set()
 
     def fail(self, exception: Exception) -> None:
@@ -254,7 +259,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
 
     def _read_from_disk(self, id: NDIndex) -> list[Any]:  # TODO: Typing
         self.raise_if_closed()
-        return self._disk_buffer.read("_".join(str(i) for i in id))
+        return self._storage_buffer.read("_".join(str(i) for i in id))
 
     async def receive(self, data: list[tuple[_T_partition_id, Any]] | bytes) -> None:
         if isinstance(data, bytes):
@@ -295,7 +300,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
     @abc.abstractmethod
     def _shard_partition(
         self, data: _T_partition_type, partition_id: _T_partition_id
-    ) -> dict[str, tuple[_T_partition_id, Any]]:
+    ) -> dict[str, list[tuple[_T_partition_id, Any]]]:
         """Shard an input partition by the assigned output workers"""
 
     def get_output_partition(
@@ -315,12 +320,12 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         """Get an output partition to the shuffle run"""
 
     @abc.abstractmethod
-    def read(self, path: Path) -> tuple[Any, int]:
-        """Read shards from disk"""
+    def write(self, data: list[Any], path: Path) -> int:
+        """Write shards to disk"""
 
     @abc.abstractmethod
-    def deserialize(self, buffer: Any) -> Any:
-        """Deserialize shards"""
+    def read(self, path: Path) -> tuple[Any, int]:
+        """Read shards from disk"""
 
 
 def get_worker_plugin() -> ShuffleWorkerPlugin:

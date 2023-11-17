@@ -107,7 +107,7 @@ def hash_join_p2p(
     lhs = _calculate_partitions(lhs, left_on, npartitions)
     rhs = _calculate_partitions(rhs, right_on, npartitions)
     merge_name = "hash-join-" + tokenize(lhs, rhs, **merge_kwargs)
-    disk: bool = dask.config.get("distributed.p2p.disk")
+    disk: bool = dask.config.get("distributed.p2p.storage.disk")
     join_layer = HashJoinP2PLayer(
         name=merge_name,
         name_input_left=lhs._name,

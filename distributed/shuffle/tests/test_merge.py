@@ -166,7 +166,7 @@ async def test_merge(c, s, a, b, how, disk):
     B = pd.DataFrame({"y": [1, 3, 4, 4, 5, 6], "z": [6, 5, 4, 3, 2, 1]})
     b = dd.repartition(B, [0, 2, 5])
 
-    with dask.config.set({"distributed.p2p.disk": disk}):
+    with dask.config.set({"distributed.p2p.storage.disk": disk}):
         joined = dd.merge(
             a, b, left_index=True, right_index=True, how=how, shuffle="p2p"
         )

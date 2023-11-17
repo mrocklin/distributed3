@@ -3,14 +3,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from dask.utils import parse_bytes
-
-from distributed.shuffle._disk import ShardsBuffer
+from distributed.shuffle._buffer import BaseBuffer
 from distributed.shuffle._limiter import ResourceLimiter
 from distributed.utils import log_errors
 
 
-class CommShardsBuffer(ShardsBuffer):
+class CommShardsBuffer(BaseBuffer):
     """Accept, buffer, and send many small messages to many workers
 
     This takes in lots of small messages destined for remote workers, buffers
@@ -48,24 +46,25 @@ class CommShardsBuffer(ShardsBuffer):
         Number of background tasks to run.
     """
 
-    max_message_size = parse_bytes("2 MiB")
+    drain = True
 
     def __init__(
         self,
         send: Callable[[str, list[tuple[Any, Any]]], Awaitable[None]],
         memory_limiter: ResourceLimiter,
+        message_bytes_limit: int,
         concurrency_limit: int = 10,
     ):
         super().__init__(
             memory_limiter=memory_limiter,
             concurrency_limit=concurrency_limit,
-            max_message_size=CommShardsBuffer.max_message_size,
+            max_message_size=message_bytes_limit,
         )
         self.send = send
 
     @log_errors
-    async def _process(self, address: str, shards: list[tuple[Any, Any]]) -> None:
+    async def _flush(self, id: str, shards: list[Any]) -> int | None:  # type: ignore[return]
         """Send one message off to a neighboring worker"""
         # Consider boosting total_size a bit here to account for duplication
         with self.time("send"):
-            await self.send(address, shards)
+            await self.send(id, shards)

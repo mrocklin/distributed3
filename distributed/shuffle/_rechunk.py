@@ -106,6 +106,7 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from toolz import concat
 from tornado.ioloop import IOLoop
 
 import dask
@@ -123,7 +124,7 @@ from distributed.shuffle._core import (
     handle_unpack_errors,
 )
 from distributed.shuffle._limiter import ResourceLimiter
-from distributed.shuffle._pickle import unpickle_bytestream
+from distributed.shuffle._pickle import pickle_bytelist, unpickle_bytestream
 from distributed.shuffle._scheduler_plugin import ShuffleSchedulerPlugin
 from distributed.shuffle._shuffle import barrier_key, shuffle_barrier
 from distributed.shuffle._worker_plugin import ShuffleWorkerPlugin
@@ -178,7 +179,7 @@ def rechunk_p2p(x: da.Array, chunks: ChunkedAxes) -> da.Array:
     token = tokenize(x, chunks)
     _barrier_key = barrier_key(ShuffleId(token))
     name = f"rechunk-transfer-{token}"
-    disk: bool = dask.config.get("distributed.p2p.disk")
+    disk: bool = dask.config.get("distributed.p2p.storage.disk")
     transfer_keys = []
     for index in np.ndindex(tuple(len(dim) for dim in x.chunks)):
         transfer_keys.append((name,) + index)
@@ -264,15 +265,14 @@ def split_axes(old: ChunkedAxes, new: ChunkedAxes) -> SplitAxes:
     return axes
 
 
-def convert_chunk(shards: list[list[tuple[NDIndex, np.ndarray]]]) -> np.ndarray:
+def convert_chunk(shards: list[tuple[NDIndex, np.ndarray]]) -> np.ndarray:
     import numpy as np
 
     from dask.array.core import concatenate3
 
     indexed: dict[NDIndex, np.ndarray] = {}
-    for sublist in shards:
-        for index, shard in sublist:
-            indexed[index] = shard
+    for index, shard in shards:
+        indexed[index] = shard
 
     subshape = [max(dim) + 1 for dim in zip(*indexed.keys())]
     assert len(indexed) == np.prod(subshape)
@@ -338,6 +338,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
         local_address: str,
         directory: str,
         executor: ThreadPoolExecutor,
+        io_executor: ThreadPoolExecutor,
         rpc: Callable[[str], PooledRPCCall],
         scheduler: PooledRPCCall,
         memory_limiter_disk: ResourceLimiter,
@@ -351,6 +352,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
             local_address=local_address,
             directory=directory,
             executor=executor,
+            io_executor=io_executor,
             rpc=rpc,
             scheduler=scheduler,
             memory_limiter_comms=memory_limiter_comms,
@@ -395,7 +397,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
 
     def _shard_partition(
         self, data: np.ndarray, partition_id: NDIndex
-    ) -> dict[str, tuple[NDIndex, Any]]:
+    ) -> dict[str, list[tuple[NDIndex, Any]]]:
         out: dict[str, list[tuple[NDIndex, tuple[NDIndex, np.ndarray]]]] = defaultdict(
             list
         )
@@ -413,7 +415,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
             out[self.worker_for[chunk_index]].append(
                 (chunk_index, (shard_index, shard))
             )
-        return {k: (partition_id, v) for k, v in out.items()}
+        return {k: [(partition_id, v)] for k, v in out.items()}
 
     def _get_output_partition(
         self, partition_id: NDIndex, key: str, **kwargs: Any
@@ -423,11 +425,15 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
         data = self._read_from_disk(partition_id)
         # Copy the memory-mapped buffers from disk into memory.
         # This is where we'll spend most time.
-        with self._disk_buffer.time("read"):
+        with self._storage_buffer.time("read"):
             return convert_chunk(data)
 
-    def deserialize(self, buffer: Any) -> Any:
-        return buffer
+    def write(self, data: list[np.ndarray], path: Path) -> int:
+        frames = concat(pickle_bytelist(shard) for shard in data)
+        with path.open(mode="ab") as f:
+            offset = f.tell()
+            f.writelines(frames)
+            return f.tell() - offset
 
     def read(self, path: Path) -> tuple[list[list[tuple[NDIndex, np.ndarray]]], int]:
         """Open a memory-mapped file descriptor to disk, read all metadata, and unpickle
@@ -478,6 +484,7 @@ class ArrayRechunkSpec(ShuffleSpec[NDIndex]):
                 f"shuffle-{self.id}-{run_id}",
             ),
             executor=plugin._executor,
+            io_executor=plugin._io_executor,
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             scheduler=plugin.worker.scheduler,

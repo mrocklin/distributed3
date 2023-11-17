@@ -1045,6 +1045,14 @@ properties:
             description: Configuration settings for Dask communications specific to P2P
             properties:
 
+              buffer:
+                type:
+                  - string
+                  - integer
+                description: |
+                  The maximum amount of data for P2P's comm buffers to buffer in-memory per worker. 
+
+                  This limit is not absolute but used to apply back pressure.
               retry:
                 type: object
                 description: |
@@ -1066,10 +1074,29 @@ properties:
                       max:
                         type: string
                         description: The maximum delay between retries
-          disk:
-            type: boolean
-            description: | 
-              Whether or not P2P stores intermediate data on disk instead of memory
+          storage:
+            type: object
+            description: Configuration settings for P2P storage
+            properties:
+
+              buffer:
+                type:
+                  - string
+                  - integer
+                description: |
+                  The maximum amount of data for P2P's storage buffers to buffer in-memory per worker 
+
+                  This limit is not absolute but used to apply back pressure.
+              disk:
+                type: boolean
+                description: | 
+                  Whether or not P2P stores intermediate data on disk instead of memory
+          threads:
+            type: integer
+            description: Number of threads used for CPU-intensive operations per worker
+          io-threads:
+            type: integer
+            description: Number of threads used for I/O operations per worker
 
       dashboard:
         type: object

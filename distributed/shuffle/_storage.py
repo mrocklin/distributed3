@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import pathlib
 import shutil
 import threading
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from toolz import concat
-
-from distributed.shuffle._buffer import ShardsBuffer
+from distributed.shuffle._buffer import BaseBuffer
 from distributed.shuffle._limiter import ResourceLimiter
-from distributed.shuffle._pickle import pickle_bytelist
 from distributed.utils import Deadline, log_errors
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 class ReadWriteLock:
@@ -92,7 +94,7 @@ class ReadWriteLock:
             self.release_read()
 
 
-class DiskShardsBuffer(ShardsBuffer):
+class StorageBuffer(BaseBuffer):
     """Accept, buffer, and write many small objects to many files
 
     This takes in lots of small objects, writes them to a local directory, and
@@ -121,25 +123,30 @@ class DiskShardsBuffer(ShardsBuffer):
         implementation of this scheme.
     """
 
+    drain = False
+
     def __init__(
         self,
         directory: str | pathlib.Path,
+        write: Callable[[Any, pathlib.Path], int],
         read: Callable[[pathlib.Path], tuple[Any, int]],
+        executor: ThreadPoolExecutor,
         memory_limiter: ResourceLimiter,
     ):
         super().__init__(
             memory_limiter=memory_limiter,
+            concurrency_limit=executor._max_workers
             # Disk is not able to run concurrently atm
-            concurrency_limit=1,
         )
-        self.directory = pathlib.Path(directory)
+        self.directory = pathlib.Path(directory).resolve()
         self.directory.mkdir(exist_ok=True)
-        self._closed = False
+        self._write_fn = write
         self._read = read
         self._directory_lock = ReadWriteLock()
+        self._executor = executor
 
     @log_errors
-    async def _process(self, id: str, shards: list[Any]) -> None:
+    async def _flush(self, id: str, shards: list[pa.Table]) -> int | None:
         """Write one buffer to file
 
         This function was built to offload the disk IO, but since then we've
@@ -152,43 +159,41 @@ class DiskShardsBuffer(ShardsBuffer):
         future then we should consider simplifying this considerably and
         dropping the write into communicate above.
         """
+
         # Consider boosting total_size a bit here to account for duplication
         with self.time("write"):
             # We only need shared (i.e., read) access to the directory to write
             # to a file inside of it.
             with self._directory_lock.read():
-                if self._closed:
-                    raise RuntimeError("Already closed")
-
-                frames: Iterable[bytes | bytearray | memoryview]
-
-                if isinstance(shards[0], bytes):
-                    # Manually serialized dataframes
-                    frames = shards
-                else:
-                    # Unserialized numpy arrays
-                    frames = concat(pickle_bytelist(shard) for shard in shards)
-
-                with open(self.directory / str(id), mode="ab") as f:
-                    f.writelines(frames)
+                return await asyncio.get_running_loop().run_in_executor(
+                    self._executor,
+                    self._write_fn,
+                    shards,
+                    (self.directory / str(id)),
+                )
 
     def read(self, id: str) -> Any:
         """Read a complete file back into memory"""
-        self.raise_on_exception()
-        if not self._inputs_done:
-            raise RuntimeError("Tried to read from file before done.")
+        if self._state == "erred":
+            assert self._exception
+            raise self._exception
+
+        if not self._state == "flushed":
+            raise RuntimeError(f"Tried to read from a {self._state} buffer.")
 
         try:
             with self.time("read"):
                 with self._directory_lock.read():
-                    if self._closed:
-                        raise RuntimeError("Already closed")
-                    data, size = self._read((self.directory / str(id)).resolve())
+                    if self._state != "flushed":
+                        raise RuntimeError("Can't read")
+                    data, bytes_read = self._read(self.directory / str(id))
+                    self.bytes_read += bytes_read
         except FileNotFoundError:
-            raise KeyError(id)
-
+            data = []
+        data += [shard for shard, _ in self.shards.get(id, [])]
+        bytes_memory = self.flushable_sizes[id]
+        self.bytes_memory -= bytes_memory
         if data:
-            self.bytes_read += size
             return data
         else:
             raise KeyError(id)
@@ -196,6 +201,5 @@ class DiskShardsBuffer(ShardsBuffer):
     async def close(self) -> None:
         await super().close()
         with self._directory_lock.write():
-            self._closed = True
             with contextlib.suppress(FileNotFoundError):
                 shutil.rmtree(self.directory)

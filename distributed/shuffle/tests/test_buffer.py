@@ -8,7 +8,7 @@ import pytest
 
 from dask.utils import parse_bytes
 
-from distributed.shuffle._buffer import ShardsBuffer
+from distributed.shuffle._buffer import BaseBuffer
 from distributed.shuffle._limiter import ResourceLimiter
 from distributed.utils import wait_for
 from distributed.utils_test import gen_test
@@ -19,7 +19,7 @@ def gen_bytes(percentage: float, limit: int) -> bytes:
     return b"0" * num_bytes
 
 
-class BufferTest(ShardsBuffer):
+class BufferTest(BaseBuffer):
     def __init__(self, memory_limiter: ResourceLimiter, concurrency_limit: int) -> None:
         self.allow_process = asyncio.Event()
         self.storage: dict[str, bytes] = defaultdict(bytes)
@@ -27,7 +27,7 @@ class BufferTest(ShardsBuffer):
             memory_limiter=memory_limiter, concurrency_limit=concurrency_limit
         )
 
-    async def _process(self, id: str, shards: list[bytes]) -> None:
+    async def _flush(self, id: str, shards: list[bytes]) -> None:
         await self.allow_process.wait()
         self.storage[id] += b"".join(shards)
 
@@ -41,15 +41,15 @@ limit = parse_bytes("10.0 MiB")
 @pytest.mark.parametrize(
     "big_payloads",
     [
-        [{"big": gen_bytes(2, limit)}],
-        [{"big": gen_bytes(0.5, limit)}] * 4,
-        [{f"big-{ix}": gen_bytes(0.5, limit)} for ix in range(4)],
-        [{f"big-{ix}": gen_bytes(0.5, limit)} for ix in range(2)] * 2,
+        [{"big": [gen_bytes(2, limit)]}],
+        [{"big": [gen_bytes(0.5, limit)]}] * 4,
+        [{f"big-{ix}": [gen_bytes(0.5, limit)]} for ix in range(4)],
+        [{f"big-{ix}": [gen_bytes(0.5, limit)]} for ix in range(2)] * 2,
     ],
 )
 @gen_test()
 async def test_memory_limit(big_payloads):
-    small_payload = {"small": gen_bytes(0.1, limit)}
+    small_payload = {"small": [gen_bytes(0.1, limit)]}
 
     limiter = ResourceLimiter(limit)
 
@@ -101,14 +101,14 @@ async def test_memory_limit(big_payloads):
         assert before == buf.memory_limiter.time_blocked_total
 
 
-class BufferShardsBroken(ShardsBuffer):
+class BufferShardsBroken(BaseBuffer):
     def __init__(self, memory_limiter: ResourceLimiter, concurrency_limit: int) -> None:
         self.storage: dict[str, bytes] = defaultdict(bytes)
         super().__init__(
             memory_limiter=memory_limiter, concurrency_limit=concurrency_limit
         )
 
-    async def _process(self, id: str, shards: list[bytes]) -> None:
+    async def _flush(self, id: str, shards: list[bytes]) -> None:
         if id == "error":
             raise RuntimeError("Error during processing")
         self.storage[id] += b"".join(shards)
@@ -122,10 +122,10 @@ async def test_memory_limit_blocked_exception():
     limit = parse_bytes("10.0 MiB")
 
     big_payload = {
-        "shard-1": gen_bytes(2, limit),
+        "shard-1": [gen_bytes(2, limit)],
     }
     broken_payload = {
-        "error": "not-bytes",
+        "error": ["not-bytes"],
     }
     limiter = ResourceLimiter(limit)
     async with BufferShardsBroken(
@@ -138,7 +138,8 @@ async def test_memory_limit_blocked_exception():
         await big_write
         await small_write
 
-        await mf.flush()
         # Make sure exception is not dropped
         with pytest.raises(RuntimeError, match="Error during processing"):
-            mf.raise_on_exception()
+            await mf.flush()
+        with pytest.raises(RuntimeError, match="Error during processing"):
+            mf.raise_if_erred()

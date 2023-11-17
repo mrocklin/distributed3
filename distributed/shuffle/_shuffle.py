@@ -25,10 +25,10 @@ from distributed.shuffle._arrow import (
     check_dtype_support,
     check_minimal_arrow_version,
     convert_shards,
-    deserialize_table,
+    copy_table,
     list_of_buffers_to_table,
     read_from_disk,
-    serialize_table,
+    write_to_disk,
 )
 from distributed.shuffle._core import (
     NDIndex,
@@ -124,7 +124,7 @@ def rearrange_by_column_p2p(
         )
 
     name = f"shuffle_p2p-{token}"
-    disk: bool = dask.config.get("distributed.p2p.disk")
+    disk: bool = dask.config.get("distributed.p2p.storage.disk")
 
     layer = P2PShuffleLayer(
         name,
@@ -335,8 +335,9 @@ def split_by_worker(
         t.slice(offset=a, length=b - a) for a, b in toolz.sliding_window(2, splits)
     ]
     shards.append(t.slice(offset=splits[-1], length=None))
-
     unique_codes = codes[splits]
+    del splits
+    shards = [copy_table(shard) for shard in shards]
     out = {
         # FIXME https://github.com/pandas-dev/pandas-stubs/issues/43
         worker_for.cat.categories[code]: shard
@@ -423,6 +424,7 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
         local_address: str,
         directory: str,
         executor: ThreadPoolExecutor,
+        io_executor: ThreadPoolExecutor,
         rpc: Callable[[str], PooledRPCCall],
         scheduler: PooledRPCCall,
         memory_limiter_disk: ResourceLimiter,
@@ -438,6 +440,7 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
             local_address=local_address,
             directory=directory,
             executor=executor,
+            io_executor=io_executor,
             rpc=rpc,
             scheduler=scheduler,
             memory_limiter_comms=memory_limiter_comms,
@@ -473,26 +476,26 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
             self._exception = e
             raise
 
-    def _repartition_buffers(self, data: list[bytes]) -> dict[NDIndex, bytes]:
+    def _repartition_buffers(self, data: list[bytes]) -> dict[NDIndex, pa.Table]:
         table = list_of_buffers_to_table(data)
         groups = split_by_partition(table, self.column)
         assert len(table) == sum(map(len, groups.values()))
         del data
-        return {(k,): serialize_table(v) for k, v in groups.items()}
+        return {(k,): [v] for k, v in groups.items()}
 
     def _shard_partition(
         self,
         data: pd.DataFrame,
         partition_id: int,
         **kwargs: Any,
-    ) -> dict[str, tuple[int, bytes]]:
+    ) -> dict[str, list[tuple[int, bytes]]]:
         out = split_by_worker(
             data,
             self.column,
             self.meta,
             self.worker_for,
         )
-        out = {k: (partition_id, serialize_table(t)) for k, t in out.items()}
+        out = {k: [(partition_id, t)] for k, t in out.items()}
         return out
 
     def _get_output_partition(
@@ -510,11 +513,11 @@ class DataFrameShuffleRun(ShuffleRun[int, "pd.DataFrame"]):
     def _get_assigned_worker(self, id: int) -> str:
         return self.worker_for[id]
 
+    def write(self, data: list[Any], path: Path) -> int:
+        return write_to_disk(data, path)
+
     def read(self, path: Path) -> tuple[pa.Table, int]:
         return read_from_disk(path)
-
-    def deserialize(self, buffer: Any) -> Any:
-        return deserialize_table(buffer)
 
 
 @dataclass(frozen=True)
@@ -542,6 +545,7 @@ class DataFrameShuffleSpec(ShuffleSpec[int]):
                 f"shuffle-{self.id}-{run_id}",
             ),
             executor=plugin._executor,
+            io_executor=plugin._io_executor,
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             scheduler=plugin.worker.scheduler,
