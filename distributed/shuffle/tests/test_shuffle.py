@@ -285,7 +285,10 @@ async def test_concurrent(c, s, a, b):
     await check_scheduler_cleanup(s)
 
 
-@gen_cluster(client=True)
+@gen_cluster(
+    client=True,
+    config={"distributed.comm.retry.count": 0, "distributed.p2p.comm.retry.count": 0},
+)
 async def test_bad_disk(c, s, a, b):
     df = dask.datasets.timeseries(
         start="2000-01-01",
@@ -398,7 +401,11 @@ async def test_closed_worker_during_transfer(c, s, a, b):
 @gen_cluster(
     client=True,
     nthreads=[("", 1)] * 2,
-    config={"distributed.scheduler.allowed-failures": 0},
+    config={
+        "distributed.scheduler.allowed-failures": 0,
+        "distributed.comm.retry.count": 0,
+        "distributed.p2p.comm.retry.count": 0,
+    },
 )
 async def test_restarting_during_transfer_raises_killed_worker(c, s, a, b):
     df = dask.datasets.timeseries(

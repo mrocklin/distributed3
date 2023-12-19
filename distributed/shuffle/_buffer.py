@@ -45,6 +45,7 @@ class ShardsBuffer(Generic[ShardType]):
     """
 
     shards: defaultdict[str, list[ShardType]]
+    in_flight_sizes: defaultdict[str, int]
     sizes: defaultdict[str, int]
     sizes_detail: defaultdict[str, list[int]]
     concurrency_limit: int
@@ -73,6 +74,7 @@ class ShardsBuffer(Generic[ShardType]):
         self._accepts_input = True
         self.shards = defaultdict(list)
         self.sizes = defaultdict(int)
+        self.in_flight_sizes = defaultdict(int)
         self.sizes_detail = defaultdict(list)
         self._exception = None
         self.concurrency_limit = concurrency_limit
@@ -122,8 +124,18 @@ class ShardsBuffer(Generic[ShardType]):
                 "avg_duration"
             ] + 0.02 * (stop - start)
         finally:
-            await self.memory_limiter.decrease(size)
-            self.bytes_memory -= size
+            async with self._shards_available:
+                assert id in self.in_flight_sizes
+                if id in self.shards:
+                    assert self.in_flight_sizes[id] > 0
+                if (s := self.in_flight_sizes[id]) > 0:
+                    self.sizes[id] = s
+                    self._shards_available.notify_all()
+                else:
+                    assert self.in_flight_sizes[id] == 0
+                del self.in_flight_sizes[id]
+                self.bytes_memory -= size
+                await self.memory_limiter.decrease(size)
 
     async def _process(self, id: str, shards: list[ShardType]) -> None:
         raise NotImplementedError()
@@ -137,36 +149,39 @@ class ShardsBuffer(Generic[ShardType]):
 
     async def _background_task(self) -> None:
         def _continue() -> bool:
-            return bool(self.shards or self._inputs_done)
+            return bool(self.sizes or self._inputs_done)
 
         while True:
             async with self._shards_available:
                 await self._shards_available.wait_for(_continue)
                 if self._inputs_done and not self.shards:
                     break
+                if not self.sizes:
+                    continue
                 part_id = max(self.sizes, key=self.sizes.__getitem__)
                 if self.max_message_size > 0:
                     size = 0
                     shards = []
+                    self.in_flight_sizes[part_id] = self.sizes.pop(part_id)
                     while size < self.max_message_size:
                         try:
                             shard = self.shards[part_id].pop()
                             shards.append(shard)
                             s = self.sizes_detail[part_id].pop()
                             size += s
-                            self.sizes[part_id] -= s
+                            self.in_flight_sizes[part_id] -= s
                         except IndexError:
                             break
                         finally:
                             if not self.shards[part_id]:
                                 del self.shards[part_id]
-                                assert not self.sizes[part_id]
-                                del self.sizes[part_id]
+                                assert self.in_flight_sizes[part_id] == 0
                                 assert not self.sizes_detail[part_id]
                                 del self.sizes_detail[part_id]
                 else:
                     shards = self.shards.pop(part_id)
                     size = self.sizes.pop(part_id)
+                    self.in_flight_sizes[part_id] = 0
                 self._shards_available.notify_all()
             await self.process(part_id, shards, size)
 
@@ -206,9 +221,12 @@ class ShardsBuffer(Generic[ShardType]):
         async with self._shards_available:
             for worker, shard in data.items():
                 self.shards[worker].append(shard)
+                if worker in self.in_flight_sizes:
+                    self.in_flight_sizes[worker] += sizes[worker]
+                else:
+                    self.sizes[worker] += sizes[worker]
                 self.sizes_detail[worker].append(sizes[worker])
-                self.sizes[worker] += sizes[worker]
-            self._shards_available.notify()
+            self._shards_available.notify_all()
         await self.memory_limiter.wait_for_available()
         del data
         assert total_batch_size
@@ -250,6 +268,8 @@ class ShardsBuffer(Generic[ShardType]):
         self._accepts_input = False
         self._inputs_done = True
         self.shards.clear()
+        self.sizes.clear()
+        self.in_flight_sizes.clear()
         self.bytes_memory = 0
         async with self._shards_available:
             self._shards_available.notify_all()
