@@ -4,6 +4,8 @@ import inspect
 import io
 import logging
 import pickle
+from copyreg import dispatch_table
+from types import FunctionType
 
 import cloudpickle
 from packaging.version import parse as parse_version
@@ -19,32 +21,32 @@ logger = logging.getLogger(__name__)
 
 class _DaskPickler(pickle.Pickler):
     def reducer_override(self, obj):
-        # For some objects this causes segfaults otherwise, see
-        # https://github.com/dask/distributed/pull/7564#issuecomment-1438727339
-        if _always_use_pickle_for(obj):
-            return NotImplemented
-        try:
-            serialize = dask_serialize.dispatch(type(obj))
-            deserialize = dask_deserialize.dispatch(type(obj))
-            return deserialize, serialize(obj)
-        except TypeError:
-            return NotImplemented
+        mod = inspect.getmodule(type(obj))
 
-
-def _always_use_pickle_for(x):
-    mod, _, _ = x.__class__.__module__.partition(".")
-    if mod == "numpy":
-        import numpy as np
-
-        return isinstance(x, np.ndarray)
-    elif mod == "pandas":
-        import pandas as pd
-
-        return isinstance(x, pd.core.generic.NDFrame)
-    elif mod == "builtins":
-        return isinstance(x, (str, bytes))
-    else:
-        return False
+        # If a thing is local scoped, use cloudpickle
+        # This check is not guaranteed and evaluates false positively for
+        # dynamically created types, e.g. numpy scalars
+        if getattr(mod, type(obj).__name__, None) is not None:
+            return pickle.loads, (cloudpickle.dumps(obj),)
+        if isinstance(obj, FunctionType):
+            module_name = pickle.whichmodule(obj, None)
+            if (
+                module_name == "__main__"
+                or CLOUDPICKLE_GE_20
+                and module_name in cloudpickle.list_registry_pickle_by_value()
+            ):
+                return pickle.loads, (cloudpickle.dumps(obj),)
+        elif type(obj) is memoryview:
+            return memoryview, (pickle.PickleBuffer(obj),)
+        elif type(obj) not in dispatch_table:
+            try:
+                serialize = dask_serialize.dispatch(type(obj))
+                deserialize = dask_deserialize.dispatch(type(obj))
+                rv = deserialize, serialize(obj)
+                return rv
+            except Exception:
+                return NotImplemented
+        return NotImplemented
 
 
 def dumps(x, *, buffer_callback=None, protocol=HIGHEST_PROTOCOL):
@@ -56,31 +58,19 @@ def dumps(x, *, buffer_callback=None, protocol=HIGHEST_PROTOCOL):
     """
     buffers = []
     dump_kwargs = {"protocol": protocol or HIGHEST_PROTOCOL}
+
     if dump_kwargs["protocol"] >= 5 and buffer_callback is not None:
         dump_kwargs["buffer_callback"] = buffers.append
-    try:
-        try:
-            result = pickle.dumps(x, **dump_kwargs)
-        except Exception:
-            f = io.BytesIO()
-            pickler = _DaskPickler(f, **dump_kwargs)
-            buffers.clear()
-            pickler.dump(x)
-            result = f.getvalue()
 
-        if not _always_use_pickle_for(x) and (
-            CLOUDPICKLE_GE_20
-            and getattr(inspect.getmodule(x), "__name__", None)
-            in cloudpickle.list_registry_pickle_by_value()
-            or (
-                len(result) < 1000
-                # Do this very last since it's expensive
-                and b"__main__" in result
-            )
-        ):
-            buffers.clear()
-            result = cloudpickle.dumps(x, **dump_kwargs)
-    except Exception:
+    try:
+        f = io.BytesIO()
+        pickler = _DaskPickler(f, **dump_kwargs)
+        pickler.dump(x)
+        result = f.getvalue()
+    except Exception as exc:
+        import traceback
+
+        traceback.print_tb(exc.__traceback__)
         try:
             buffers.clear()
             result = cloudpickle.dumps(x, **dump_kwargs)

@@ -20,7 +20,7 @@ from distributed.protocol.pickle import (
     loads,
 )
 from distributed.protocol.serialize import dask_deserialize, dask_serialize
-from distributed.utils_test import save_sys_modules
+from distributed.utils_test import popen, save_sys_modules
 
 
 class MemoryviewHolder:
@@ -278,3 +278,25 @@ def test_nopickle_nested():
     finally:
         del dask_serialize._lookup[NoPickle]
         del dask_deserialize._lookup[NoPickle]
+
+
+@pytest.mark.slow()
+def test_pickle_functions_in_main(tmp_path):
+    script = """
+from dask.distributed import Client
+
+if __name__ == "__main__":
+    with Client(n_workers=1) as client:
+        def func(df):
+            return (df + 5)
+        client.submit(func, 5).result()
+        print("success")
+"""
+    with open(tmp_path / "script.py", mode="w") as f:
+        f.write(script)
+    with popen([sys.executable, tmp_path / "script.py"], capture_output=True) as proc:
+        out, _ = proc.communicate(timeout=60)
+
+    lines = out.decode("utf-8").split("\n")
+
+    assert "success" in lines
