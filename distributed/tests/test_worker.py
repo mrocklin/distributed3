@@ -1627,7 +1627,6 @@ async def test_close_while_executing(c, s, a, sync):
     assert s.tasks["f1"].state in ("queued", "no-worker")
 
 
-@pytest.mark.slow
 @gen_cluster(client=True, nthreads=[("", 1)])
 async def test_close_async_task_handles_cancellation(c, s, a):
     ev = Event()
@@ -1653,6 +1652,8 @@ async def test_close_async_task_handles_cancellation(c, s, a):
     assert s.tasks["f1"].state in ("queued", "no-worker")
     task.cancel()
     await asyncio.wait({task})
+
+    await a.close(timeout=1)
 
 
 @pytest.mark.slow
