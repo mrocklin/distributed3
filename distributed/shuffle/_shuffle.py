@@ -576,7 +576,7 @@ class DataFrameShuffleSpec(ShuffleSpec[int]):
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             digest_metric=plugin.worker.digest_metric,
-            scheduler=plugin.worker.scheduler,
+            scheduler=plugin.worker.scheduler_ordered,  # type: ignore
             memory_limiter_disk=plugin.memory_limiter_disk
             if self.disk
             else ResourceLimiter(None),

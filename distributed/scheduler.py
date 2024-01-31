@@ -4185,7 +4185,7 @@ class Scheduler(SchedulerState, ServerNode):
     def heartbeat_worker(
         self,
         *,
-        address: str,
+        worker: str,
         resolve_address: bool = True,
         now: float | None = None,
         resources: dict[str, float] | None = None,
@@ -4194,7 +4194,7 @@ class Scheduler(SchedulerState, ServerNode):
         executing: dict[Key, float] | None = None,
         extensions: dict | None = None,
     ) -> dict[str, Any]:
-        address = self.coerce_address(address, resolve_address)
+        address = self.coerce_address(worker, resolve_address)
         address = normalize_address(address)
         ws = self.workers.get(address)
         if ws is None:
@@ -4373,7 +4373,7 @@ class Scheduler(SchedulerState, ServerNode):
         self.aliases[name] = address
 
         self.heartbeat_worker(
-            address=address,
+            worker=address,
             resolve_address=resolve_address,
             now=now,
             resources=resources,

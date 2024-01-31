@@ -31,6 +31,7 @@ from tlz import merge
 from tornado.ioloop import IOLoop
 
 import dask
+from dask.typing import NoDefault, no_default
 from dask.utils import parse_timedelta
 
 from distributed import profile, protocol
@@ -56,6 +57,7 @@ from distributed.utils import (
     import_file,
     is_python_shutting_down,
     iscoroutinefunction,
+    log_errors,
     offload,
     recursive_to_dict,
     truncate_exception,
@@ -66,6 +68,7 @@ from distributed.utils import (
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec, Self
 
+    from distributed.batched import BatchedSend
     from distributed.counter import Digest
 
     P = ParamSpec("P")
@@ -98,6 +101,11 @@ class Status(Enum):
 
 
 Status.lookup = {s.name: s for s in Status}  # type: ignore
+
+
+class RPCCall:
+    def __getattr__(self, key: str) -> Callable[..., Awaitable]:
+        raise NotImplementedError()
 
 
 class RPCClosed(IOError):
@@ -428,6 +436,7 @@ class Server:
             "echo": self.echo,
             "connection_stream": self.handle_stream,
             "dump_state": self._to_dict,
+            "_ordered_send_payload": self._handle_ordered_send_payload,
         }
         self.handlers.update(handlers)
         if blocked_handlers is None:
@@ -435,7 +444,12 @@ class Server:
                 "distributed.%s.blocked-handlers" % type(self).__name__.lower(), []
             )
         self.blocked_handlers = blocked_handlers
-        self.stream_handlers = {}
+        self.stream_handlers = {
+            "__ordered_send": self._handle_ordered_send,
+            "__ordered_rcv": self._handle_ordered_rcv,
+        }
+        self._side_channel_payload = {}
+        self._side_channel_arrived = defaultdict(asyncio.Event)
         self.stream_handlers.update(stream_handlers or {})
 
         self.id = type(self).__name__ + "-" + str(uuid.uuid4())
@@ -533,7 +547,15 @@ class Server:
             timeout=timeout,
             server=self,
         )
+        import itertools
 
+        self._counter = itertools.count()
+        self._responses = {}
+        self._waiting_for = deque()
+        self._ensure_order = asyncio.Condition()
+
+        self._batched_comms = {}
+        self._batched_comms_locks = defaultdict(asyncio.Lock)
         self.__stopped = False
 
     async def upload_file(
@@ -1064,6 +1086,135 @@ class Server:
             await comm.close()
             assert comm.closed()
 
+    async def _handle_ordered_send_payload(self, sig, payload, origin):
+        # FIXME: If something goes wrong, this can leak memory
+        # We'd need a callback for when the incoming connection is closed to
+        # clean this up
+        key = (origin, sig)
+        self._side_channel_payload[key] = payload
+        self._side_channel_arrived[key].set()
+
+    async def _handle_ordered_send(
+        self, sig, user_op, origin, user_kwargs, use_side_channel, **extra
+    ):
+        # Note: The backchannel is currently unique. It's currently unclear if
+        # we need more control here
+        bcomm = await self._get_bcomm(origin)
+        try:
+            if use_side_channel:
+                assert user_kwargs is None
+                key = (origin, sig)
+                await self._side_channel_arrived[key].wait()
+                user_kwargs = self._side_channel_payload.pop(key)
+            result = self.handlers[user_op](**merge(extra, user_kwargs))
+            if inspect.isawaitable(result):
+                result = await result
+            bcomm.send({"op": "__ordered_rcv", "sig": sig, "result": result})
+        except Exception as e:
+            exc_info = error_message(e)
+            bcomm.send({"op": "__ordered_rcv", "sig": sig, "exc_info": exc_info})
+
+    async def _handle_ordered_rcv(self, sig, result=no_default, exc_info=no_default):
+        fut = self._responses[sig]
+        if result is not no_default:
+            assert exc_info is no_default
+            fut.set_result(result)
+        elif exc_info is not no_default:
+            assert result is no_default
+            _, exc, tb = clean_exception(**exc_info)
+            fut.set_exception(exc.with_traceback(tb))
+        else:
+            raise RuntimeError("Unreachable")
+
+    @log_errors
+    async def ordered_rpc(
+        self,
+        addr: str | NoDefault = no_default,
+        bcomm: BatchedSend | NoDefault = no_default,
+        use_side_channel: bool = False,
+    ) -> RPCCall:
+        # TODO: Allow different channels?
+        if addr is not no_default:
+            assert bcomm is no_default
+            bcomm = await self._get_bcomm(addr)
+        else:
+            assert bcomm is not no_default
+            addr = bcomm.comm.peer_address
+
+        server = self
+
+        class OrderedRPC(RPCCall):
+            def __init__(self, bcomm):
+                self._bcomm = bcomm
+
+            def __getattr__(self, key):
+                async def send_recv_from_rpc(**kwargs):
+                    sig = next(server._counter)
+                    msg = {
+                        "op": "__ordered_send",
+                        "sig": sig,
+                        "user_op": key,
+                        "origin": server.address,
+                        "use_side_channel": use_side_channel,
+                    }
+                    if not use_side_channel:
+                        msg["user_kwargs"] = kwargs
+                    else:
+                        msg["user_kwargs"] = None
+                    self._bcomm.send(msg)
+                    fut = asyncio.Future()
+                    server._responses[sig] = fut
+                    server._waiting_for.append(sig)
+                    if use_side_channel:
+                        # Note: We may even want to consider moving this to a
+                        # background task
+                        async def _():
+                            await server.rpc(addr)._ordered_send_payload(
+                                sig=sig,
+                                payload=kwargs,
+                                origin=server.address,
+                            )
+
+                        server._ongoing_background_tasks.call_soon(_)
+
+                    async def watch_comm():
+                        while True:
+                            if self._bcomm.comm.closed():
+                                fut.set_exception(CommClosedError)
+                                break
+                            await asyncio.sleep(0.1)
+
+                    t = asyncio.create_task(watch_comm())
+
+                    def is_next():
+                        return server._waiting_for[0] == sig
+
+                    try:
+                        async with server._ensure_order:
+                            await server._ensure_order.wait_for(is_next)
+                            return await fut
+                    finally:
+                        t.cancel()
+                        server._waiting_for.popleft()
+
+                return send_recv_from_rpc
+
+        return OrderedRPC(bcomm)
+
+    async def _get_bcomm(self, addr):
+        async with self._batched_comms_locks[addr]:
+            if addr in self._batched_comms:
+                bcomm = self._batched_comms[addr]
+                if not bcomm.comm.closed():
+                    return bcomm
+            from distributed.batched import BatchedSend
+
+            comm = await self.rpc.connect(addr)
+            await comm.write({"op": "connection_stream"})
+            self._batched_comms[addr] = bcomm = BatchedSend(interval=0.01)
+            bcomm.start(comm)
+            return bcomm
+
     async def close(self, timeout: float | None = None, reason: str = "") -> None:
         try:
             for pc in self.periodic_callbacks.values():
@@ -1366,7 +1517,7 @@ class rpc:
         return "<rpc to %r, %d comms>" % (self.address, len(self.comms))
 
 
-class PooledRPCCall:
+class PooledRPCCall(RPCCall):
     """The result of ConnectionPool()('host:port')
 
     See Also:

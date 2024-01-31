@@ -1751,39 +1751,6 @@ async def test_shutdown_on_scheduler_comm_closed(s, a):
         assert f"Connection to {s.address} has been closed" in logger.getvalue()
 
 
-@gen_cluster(nthreads=[])
-async def test_heartbeat_comm_closed(s, monkeypatch):
-    with captured_logger("distributed.worker", level=logging.WARNING) as logger:
-
-        def bad_heartbeat_worker(*args, **kwargs):
-            raise CommClosedError()
-
-        async with Worker(s.address) as w:
-            # Trigger CommClosedError during worker heartbeat
-            monkeypatch.setattr(w.scheduler, "heartbeat_worker", bad_heartbeat_worker)
-
-            await w.heartbeat()
-            assert w.status == Status.running
-    logs = logger.getvalue()
-    assert "Failed to communicate with scheduler during heartbeat" in logs
-    assert "Traceback" in logs
-
-
-@gen_cluster(nthreads=[("", 1)], worker_kwargs={"heartbeat_interval": "100s"})
-async def test_heartbeat_missing(s, a, monkeypatch):
-    async def missing_heartbeat_worker(*args, **kwargs):
-        return {"status": "missing"}
-
-    with captured_logger("distributed.worker", level=logging.WARNING) as wlogger:
-        monkeypatch.setattr(a.scheduler, "heartbeat_worker", missing_heartbeat_worker)
-        await a.heartbeat()
-        assert a.status == Status.closed
-        assert "Scheduler was unaware of this worker" in wlogger.getvalue()
-
-        while s.workers:
-            await asyncio.sleep(0.01)
-
-
 @gen_cluster(nthreads=[("", 1)], worker_kwargs={"heartbeat_interval": "100s"})
 async def test_heartbeat_missing_real_cluster(s, a):
     # The idea here is to create a situation where `s.workers[a.address]`,

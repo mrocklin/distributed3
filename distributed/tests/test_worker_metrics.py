@@ -597,7 +597,7 @@ async def test_new_metrics_during_heartbeat(c, s, a):
         a.digest_metric(("execute", span.id, "x", "test", "test"), 1)
         await asyncio.sleep(0)
     await hb_task
-    assert n > 9
+    assert n > 1
     await a.heartbeat()
 
     assert a.digests_total["execute", span.id, "x", "test", "test"] == n

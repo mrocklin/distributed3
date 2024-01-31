@@ -78,7 +78,9 @@ class ShuffleSchedulerPlugin(SchedulerPlugin):
     def shuffle_ids(self) -> set[ShuffleId]:
         return set(self.active_shuffles)
 
-    async def barrier(self, id: ShuffleId, run_id: int, consistent: bool) -> None:
+    async def barrier(
+        self, id: ShuffleId, run_id: int, consistent: bool, worker: None
+    ) -> None:
         shuffle = self.active_shuffles[id]
         if shuffle.run_id != run_id:
             raise ValueError(f"{run_id=} does not match {shuffle}")
@@ -98,7 +100,9 @@ class ShuffleSchedulerPlugin(SchedulerPlugin):
             workers=list(shuffle.participating_workers),
         )
 
-    def restrict_task(self, id: ShuffleId, run_id: int, key: Key, worker: str) -> dict:
+    def restrict_task(
+        self, id: ShuffleId, run_id: int, key: Key, assigned_worker: str, worker: str
+    ) -> dict:
         shuffle = self.active_shuffles[id]
         if shuffle.run_id > run_id:
             return {
@@ -111,7 +115,7 @@ class ShuffleSchedulerPlugin(SchedulerPlugin):
                 "message": f"Request invalid, expected {run_id=} for {shuffle}",
             }
         ts = self.scheduler.tasks[key]
-        self._set_restriction(ts, worker)
+        self._set_restriction(ts, assigned_worker)
         return {"status": "OK"}
 
     def heartbeat(self, ws: WorkerState, data: dict) -> None:

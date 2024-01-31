@@ -773,7 +773,7 @@ class ArrayRechunkSpec(ShuffleSpec[NDIndex]):
             local_address=plugin.worker.address,
             rpc=plugin.worker.rpc,
             digest_metric=plugin.worker.digest_metric,
-            scheduler=plugin.worker.scheduler,
+            scheduler=plugin.worker.scheduler_ordered,  # type: ignore
             memory_limiter_disk=plugin.memory_limiter_disk,
             memory_limiter_comms=plugin.memory_limiter_comms,
             disk=self.disk,

@@ -302,7 +302,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
 
         if assigned_worker != self.local_address:
             result = await self.scheduler.shuffle_restrict_task(
-                id=self.id, run_id=self.run_id, key=key, worker=assigned_worker
+                id=self.id, run_id=self.run_id, key=key, assigned_worker=assigned_worker
             )
             if result["status"] == "error":
                 raise RuntimeError(result["message"])

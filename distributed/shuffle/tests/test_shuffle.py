@@ -2572,10 +2572,12 @@ class BlockedBarrierShuffleSchedulerPlugin(ShuffleSchedulerPlugin):
         self.in_barrier = asyncio.Event()
         self.block_barrier = asyncio.Event()
 
-    async def barrier(self, id: ShuffleId, run_id: int, consistent: bool) -> None:
+    async def barrier(
+        self, id: ShuffleId, run_id: int, consistent: bool, worker: None
+    ) -> None:
         self.in_barrier.set()
         await self.block_barrier.wait()
-        return await super().barrier(id, run_id, consistent)
+        return await super().barrier(id, run_id, consistent, worker)
 
 
 @gen_cluster(client=True)
