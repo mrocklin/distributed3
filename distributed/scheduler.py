@@ -57,7 +57,6 @@ from dask.base import TokenizationError, normalize_token, tokenize
 from dask.core import get_deps, iskey, validate_key
 from dask.typing import Key, no_default
 from dask.utils import (
-    ensure_dict,
     format_bytes,
     format_time,
     key_split,
@@ -141,7 +140,7 @@ if TYPE_CHECKING:
     # TODO import from typing (requires Python >=3.10)
     from typing_extensions import TypeAlias
 
-    from dask.highlevelgraph import HighLevelGraph
+    from dask.typing import TaskGraphFactory
 
 # Not to be confused with distributed.worker_state_machine.TaskStateState
 TaskStateState: TypeAlias = Literal[
@@ -4654,7 +4653,7 @@ class Scheduler(SchedulerState, ServerNode):
         client: str,
         graph_header: dict,
         graph_frames: list[bytes],
-        keys: set[Key],
+        keys: list[Key],
         internal_priority: dict[Key, int] | None,
         submitting_task: Key | None,
         user_priority: int | dict[Key, int] = 0,
@@ -4670,7 +4669,16 @@ class Scheduler(SchedulerState, ServerNode):
         start = time()
         try:
             try:
-                graph = deserialize(graph_header, graph_frames).data
+                graph_factory = deserialize(graph_header, graph_frames).data
+                if list(graph_factory.__dask_output_keys__()) != list(keys):
+                    # Note: If we no longer want to rely on tokenization to be
+                    # consistent beyond an interpreter session, we could
+                    # implement this in a way that the scheduler sends a signal
+                    # back to the client with the final key names
+                    # This would be easiest with a version of https://github.com/dask/distributed/issues/7480
+                    raise RuntimeError(
+                        "Catastrophic failure. Tokenization of keys unstable!"
+                    )
                 del graph_header, graph_frames
             except Exception as e:
                 msg = """\
@@ -4686,10 +4694,10 @@ class Scheduler(SchedulerState, ServerNode):
                 annotations_by_type,
             ) = await offload(
                 _materialize_graph,
-                graph=graph,
+                graph_factory=graph_factory,
                 global_annotations=annotations or {},
             )
-            del graph
+            del graph_factory
             if not internal_priority:
                 # Removing all non-local keys before calling order()
                 dsk_keys = set(
@@ -8772,9 +8780,9 @@ class CollectTaskMetaDataPlugin(SchedulerPlugin):
 
 
 def _materialize_graph(
-    graph: HighLevelGraph, global_annotations: dict[str, Any]
+    graph_factory: TaskGraphFactory, global_annotations: dict[str, Any]
 ) -> tuple[dict[Key, T_runspec], dict[Key, set[Key]], dict[str, dict[Key, Any]]]:
-    dsk = ensure_dict(graph)
+    dsk = graph_factory.materialize()
     for k in dsk:
         validate_key(k)
     annotations_by_type: defaultdict[str, dict[Key, Any]] = defaultdict(dict)
@@ -8782,14 +8790,10 @@ def _materialize_graph(
         annotations_by_type[annotations_type].update(
             {k: (value(k) if callable(value) else value) for k in dsk}
         )
+    graph_annotations = graph_factory.get_annotations()
 
-    for layer in graph.layers.values():
-        if layer.annotations:
-            annot = layer.annotations
-            for annot_type, value in annot.items():
-                annotations_by_type[annot_type].update(
-                    {k: (value(k) if callable(value) else value) for k in layer}
-                )
+    for k, v in graph_annotations.items():
+        annotations_by_type[k].update(v)
     dependencies, _ = get_deps(dsk)
 
     # Remove `Future` objects from graph and note any future dependencies

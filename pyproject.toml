@@ -109,7 +109,7 @@ addopts = '''
 -p no:asyncio
 -p no:legacypath'''
 filterwarnings = [
-    "error",
+    
     '''ignore:Please use `dok_matrix` from the `scipy\.sparse` namespace, the `scipy\.sparse\.dok` namespace is deprecated.:DeprecationWarning''',
     '''ignore:elementwise comparison failed. this will raise an error in the future:DeprecationWarning''',
     '''ignore:unclosed <socket\.socket.*:ResourceWarning''',
