@@ -105,7 +105,7 @@ from distributed.node import ServerNode
 from distributed.proctitle import setproctitle
 from distributed.protocol import deserialize
 from distributed.protocol.pickle import dumps, loads
-from distributed.protocol.serialize import Serialized, ToPickle, serialize
+from distributed.protocol.serialize import Serialize, Serialized, serialize
 from distributed.publish import PublishExtension
 from distributed.pubsub import PubSubSchedulerExtension
 from distributed.queues import QueueExtension
@@ -3439,7 +3439,7 @@ class SchedulerState:
                 for dts in ts.dependencies
             },
             "nbytes": {dts.key: dts.nbytes for dts in ts.dependencies},
-            "run_spec": ToPickle(ts.run_spec),
+            "run_spec": Serialize(ts.run_spec),
             "resource_restrictions": ts.resource_restrictions,
             "actor": ts.actor,
             "annotations": ts.annotations or {},
@@ -4664,8 +4664,7 @@ class Scheduler(SchedulerState, ServerNode):
     async def update_graph(
         self,
         client: str,
-        graph_header: dict,
-        graph_frames: list[bytes],
+        graph_ser: Serialized,
         keys: set[Key],
         internal_priority: dict[Key, int] | None,
         submitting_task: Key | None,
@@ -4679,8 +4678,8 @@ class Scheduler(SchedulerState, ServerNode):
         start = time()
         try:
             try:
-                graph = deserialize(graph_header, graph_frames).data
-                del graph_header, graph_frames
+                graph = deserialize(graph_ser.header, graph_ser.frames)
+                del graph_ser
             except Exception as e:
                 msg = """\
                     Error during deserialization of the task graph. This frequently
