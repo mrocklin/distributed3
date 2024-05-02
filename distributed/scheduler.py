@@ -4664,7 +4664,7 @@ class Scheduler(SchedulerState, ServerNode):
     async def update_graph(
         self,
         client: str,
-        graph_ser: Serialized,
+        graph: Serialized,
         keys: set[Key],
         internal_priority: dict[Key, int] | None,
         submitting_task: Key | None,
@@ -4678,8 +4678,7 @@ class Scheduler(SchedulerState, ServerNode):
         start = time()
         try:
             try:
-                graph = deserialize(graph_ser.header, graph_ser.frames)
-                del graph_ser
+                graph = deserialize(graph.header, graph.frames)
             except Exception as e:
                 msg = """\
                     Error during deserialization of the task graph. This frequently
@@ -4694,7 +4693,7 @@ class Scheduler(SchedulerState, ServerNode):
                 annotations_by_type,
             ) = await offload(
                 _materialize_graph,
-                graph=graph,
+                graph=graph,  # type: ignore[arg-type]
                 global_annotations=annotations or {},
             )
             del graph
