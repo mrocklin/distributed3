@@ -44,9 +44,8 @@ from distributed.comm.addressing import parse_host_port
 from distributed.compatibility import LINUX, MACOS, WINDOWS, PeriodicCallback
 from distributed.core import ConnectionPool, Status, clean_exception, connect, rpc
 from distributed.metrics import time
-from distributed.protocol import serialize
+from distributed.protocol import Serialize, Serialized, serialize
 from distributed.protocol.pickle import dumps, loads
-from distributed.protocol.serialize import ToPickle
 from distributed.scheduler import KilledWorker, MemoryState, Scheduler, WorkerState
 from distributed.utils import TimeoutError, wait_for
 from distributed.utils_test import (
@@ -1431,10 +1430,8 @@ async def test_update_graph_culls(s, a, b):
         dependencies={"foo": set()},
     )
 
-    header, frames = serialize(ToPickle(dsk), on_error="raise")
     await s.update_graph(
-        graph_header=header,
-        graph_frames=frames,
+        graph=Serialized(serialize(Serialize(dsk), on_error="raise")),
         keys=["y"],
         client="client",
         internal_priority={k: 0 for k in "xyz"},
