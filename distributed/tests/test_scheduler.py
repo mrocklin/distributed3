@@ -1431,7 +1431,7 @@ async def test_update_graph_culls(s, a, b):
     )
 
     await s.update_graph(
-        graph=Serialized(serialize(Serialize(dsk), on_error="raise")),
+        graph=Serialized(*serialize(Serialize(dsk), on_error="raise")),
         keys=["y"],
         client="client",
         internal_priority={k: 0 for k in "xyz"},
