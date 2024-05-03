@@ -3150,9 +3150,10 @@ class Client(SyncMethodMixin):
             futures = {key: Future(key, self, inform=False) for key in keyset}
             # Circular import
             from distributed.protocol import serialize
-            from distributed.protocol.serialize import Serialize, Serialized, ToPickle
+            from distributed.protocol.serialize import Pickled, ToPickle
 
-            header, frames = serialize(Serialize(dsk), on_error="raise")
+            # This is pulled out to have better exception messages
+            header, frames = serialize(ToPickle(dsk), on_error="raise")
 
             pickled_size = sum(map(nbytes, [header] + frames))
             if pickled_size > parse_bytes(
@@ -3170,7 +3171,7 @@ class Client(SyncMethodMixin):
             self._send_to_scheduler(
                 {
                     "op": "update-graph",
-                    "graph": Serialized(header, frames),
+                    "graph": Pickled(header, frames),
                     "keys": list(keys),
                     "internal_priority": internal_priority,
                     "submitting_task": getattr(thread_state, "key", None),
