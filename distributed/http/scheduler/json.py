@@ -55,7 +55,7 @@ class CountsJSON(RequestHandler):
 
 class IdentityJSON(RequestHandler):
     def get(self):
-        self.write(self.server.identity())
+        self.write(self.identity())
 
 
 class IndexJSON(RequestHandler):

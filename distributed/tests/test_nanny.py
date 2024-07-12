@@ -78,7 +78,6 @@ async def test_nanny_process_failure(c, s):
     assert not os.path.exists(second_dir)
     assert not os.path.exists(first_dir)
     assert first_dir != n.worker_dir
-    s.stop()
 
 
 @gen_cluster(nthreads=[])
@@ -202,10 +201,9 @@ async def test_worker_uses_same_host_as_nanny(c, s):
 @gen_test()
 async def test_scheduler_file():
     with tmpfile() as fn:
-        s = await Scheduler(scheduler_file=fn, dashboard_address=":0")
-        async with Nanny(scheduler_file=fn) as n:
-            assert set(s.workers) == {n.worker_address}
-        s.stop()
+        async with Scheduler(scheduler_file=fn, dashboard_address=":0") as s:
+            async with Nanny(scheduler_file=fn) as n:
+                assert set(s.workers) == {n.worker_address}
 
 
 @pytest.mark.xfail(

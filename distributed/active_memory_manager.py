@@ -110,7 +110,7 @@ class ActiveMemoryManagerExtension:
         self.measure = measure
 
         if register:
-            scheduler.handlers["amm_handler"] = self.amm_handler
+            scheduler.server.handlers["amm_handler"] = self.amm_handler
 
         if interval is None:
             interval = parse_timedelta(

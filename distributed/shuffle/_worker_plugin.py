@@ -189,13 +189,13 @@ class _ShuffleRunManager:
         if spec is None:
             response = await self._plugin.worker.scheduler.shuffle_get(
                 id=shuffle_id,
-                worker=self._plugin.worker.address,
+                worker=self._plugin.worker.server.address,
             )
         else:
             response = await self._plugin.worker.scheduler.shuffle_get_or_create(
                 spec=ToPickle(spec),
                 key=key,
-                worker=self._plugin.worker.address,
+                worker=self._plugin.worker.server.address,
             )
 
         status = response["status"]
@@ -277,9 +277,9 @@ class ShuffleWorkerPlugin(WorkerPlugin):
 
     def setup(self, worker: Worker) -> None:
         # Attach to worker
-        worker.handlers["shuffle_receive"] = self.shuffle_receive
-        worker.handlers["shuffle_inputs_done"] = self.shuffle_inputs_done
-        worker.stream_handlers["shuffle-fail"] = self.shuffle_fail
+        worker.server.handlers["shuffle_receive"] = self.shuffle_receive
+        worker.server.handlers["shuffle_inputs_done"] = self.shuffle_inputs_done
+        worker.server.stream_handlers["shuffle-fail"] = self.shuffle_fail
         worker.extensions["shuffle"] = self
 
         # Initialize
@@ -295,10 +295,10 @@ class ShuffleWorkerPlugin(WorkerPlugin):
         self._executor = ThreadPoolExecutor(self.worker.state.nthreads)
 
     def __str__(self) -> str:
-        return f"ShuffleWorkerPlugin on {self.worker.address}"
+        return f"ShuffleWorkerPlugin on {self.worker}"
 
     def __repr__(self) -> str:
-        return f"<ShuffleWorkerPlugin, worker={self.worker.address_safe!r}, closed={self.closed}>"
+        return f"<ShuffleWorkerPlugin, worker={self.worker!r}, closed={self.closed}>"
 
     # Handlers
     ##########

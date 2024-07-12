@@ -62,7 +62,7 @@ from dask.utils import (
 )
 from dask.widgets import get_template
 
-from distributed.core import OKMessage
+from distributed.core import OKMessage, Server
 from distributed.protocol.serialize import _is_dumpable
 from distributed.utils import Deadline, wait_for
 
@@ -81,11 +81,9 @@ from distributed.cfexecutor import ClientExecutor
 from distributed.compatibility import PeriodicCallback
 from distributed.core import (
     CommClosedError,
-    ConnectionPool,
     PooledRPCCall,
     Status,
     clean_exception,
-    connect,
     rpc,
 )
 from distributed.diagnostics.plugin import (
@@ -1192,7 +1190,7 @@ class Client(SyncMethodMixin):
             self._set_config = dask.config.set(scheduler="dask.distributed")
         self._event_handlers = {}
 
-        self._stream_handlers = {
+        stream_handlers = {
             "key-in-memory": self._handle_key_in_memory,
             "lost-data": self._handle_lost_data,
             "cancelled-keys": self._handle_cancelled_keys,
@@ -1209,15 +1207,17 @@ class Client(SyncMethodMixin):
             "erred": self._handle_task_erred,
         }
 
-        self.rpc = ConnectionPool(
-            limit=connection_limit,
-            serializers=serializers,
-            deserializers=deserializers,
+        self.server = Server(
+            {},
+            stream_handlers=stream_handlers,
+            connection_limit=connection_limit,
             deserialize=True,
-            connection_args=self.connection_args,
+            deserializers=deserializers,
+            serializers=serializers,
             timeout=timeout,
-            server=self,
+            connection_args=self.connection_args,
         )
+        self.rpc = self.server.rpc
 
         self.extensions = {
             name: extension(self) for name, extension in extensions.items()
@@ -1463,7 +1463,7 @@ class Client(SyncMethodMixin):
     async def _start(self, timeout=no_default, **kwargs):
         self.status = "connecting"
 
-        await self.rpc.start()
+        await self.server
 
         if timeout is no_default:
             timeout = self._timeout
@@ -1504,7 +1504,7 @@ class Client(SyncMethodMixin):
         self._gather_semaphore = asyncio.Semaphore(5)
 
         if self.scheduler is None:
-            self.scheduler = self.rpc(address)
+            self.scheduler = self.server.rpc(address)
         self.scheduler_comm = None
 
         try:
@@ -1521,7 +1521,9 @@ class Client(SyncMethodMixin):
 
         await self.preloads.start()
 
-        self._handle_report_task = asyncio.create_task(self._handle_report())
+        self._handle_report_task = asyncio.create_task(
+            self.server.handle_stream(self.scheduler_comm.comm)
+        )
 
         return self
 
@@ -1576,9 +1578,7 @@ class Client(SyncMethodMixin):
         self._connecting_to_scheduler = True
 
         try:
-            comm = await connect(
-                self.scheduler.address, timeout=timeout, **self.connection_args
-            )
+            comm = await self.server.rpc.connect(self.scheduler.address)
             comm.name = "Client->Scheduler"
             if timeout is not None:
                 await wait_for(self._update_scheduler_info(), timeout)
@@ -1763,63 +1763,6 @@ class Client(SyncMethodMixin):
                 {"op": "client-releases-keys", "keys": [key], "client": self.id}
             )
 
-    @log_errors
-    async def _handle_report(self):
-        """Listen to scheduler"""
-        try:
-            while True:
-                if self.scheduler_comm is None:
-                    break
-                try:
-                    msgs = await self.scheduler_comm.comm.read()
-                except CommClosedError:
-                    if self._is_finalizing():
-                        return
-                    if self.status == "running":
-                        if self.cluster and self.cluster.status in (
-                            Status.closed,
-                            Status.closing,
-                        ):
-                            # Don't attempt to reconnect if cluster are already closed.
-                            # Instead close down the client.
-                            await self._close()
-                            return
-                        logger.info("Client report stream closed to scheduler")
-                        logger.info("Reconnecting...")
-                        self.status = "connecting"
-                        await self._reconnect()
-                        continue
-                    else:
-                        break
-                if not isinstance(msgs, (list, tuple)):
-                    msgs = (msgs,)
-
-                breakout = False
-                for msg in msgs:
-                    logger.debug("Client %s receives message %s", self.id, msg)
-
-                    if "status" in msg and "error" in msg["status"]:
-                        typ, exc, tb = clean_exception(**msg)
-                        raise exc.with_traceback(tb)
-
-                    op = msg.pop("op")
-
-                    if op == "close" or op == "stream-closed":
-                        breakout = True
-                        break
-
-                    try:
-                        handler = self._stream_handlers[op]
-                        result = handler(**msg)
-                        if inspect.isawaitable(result):
-                            await result
-                    except Exception as e:
-                        logger.exception(e)
-                if breakout:
-                    break
-        except (CancelledError, asyncio.CancelledError):
-            pass
-
     def _handle_key_in_memory(self, key=None, type=None, workers=None):
         state = self.futures.get(key)
         if state is not None:
@@ -1929,13 +1872,6 @@ class Client(SyncMethodMixin):
             self._send_to_scheduler({"op": "close-client"})
             self._send_to_scheduler({"op": "close-stream"})
         async with self._wait_for_handle_report_task(fast=fast):
-            if (
-                self.scheduler_comm
-                and self.scheduler_comm.comm
-                and not self.scheduler_comm.comm.closed()
-            ):
-                await self.scheduler_comm.close()
-
             for key in list(self.futures):
                 self._release_key(key=key)
 
@@ -1943,15 +1879,12 @@ class Client(SyncMethodMixin):
                 with suppress(AttributeError):
                     await self.cluster.close()
 
-            await self.rpc.close()
+            await self.server.close()
 
-            self.status = "closed"
+        self.status = "closed"
 
-            if _get_global_client() is self:
-                _set_global_client(None)
-
-        with suppress(AttributeError):
-            await self.scheduler.close_rpc()
+        if _get_global_client() is self:
+            _set_global_client(None)
 
         self.scheduler = None
         self.status = "closed"

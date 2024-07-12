@@ -406,7 +406,7 @@ def get_worker_plugin() -> ShuffleWorkerPlugin:
         return worker.plugins["shuffle"]  # type: ignore
     except KeyError as e:
         raise RuntimeError(
-            f"The worker {worker.address} does not have a P2P shuffle plugin."
+            f"The worker {worker.server.address} does not have a P2P shuffle plugin."
         ) from e
 
 

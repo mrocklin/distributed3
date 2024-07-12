@@ -50,7 +50,7 @@ class EventExtension:
         # we can remove the event
         self._waiter_count = defaultdict(int)
 
-        self.scheduler.handlers.update(
+        self.scheduler.server.handlers.update(
             {
                 "event_wait": self.event_wait,
                 "event_set": self.event_set,

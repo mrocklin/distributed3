@@ -4033,7 +4033,7 @@ async def test_get_versions_async(c, s, a, b):
 
 @gen_cluster(client=True, config={"distributed.comm.timeouts.connect": "200ms"})
 async def test_get_versions_rpc_error(c, s, a, b):
-    a.stop()
+    a.server.stop()
     v = await c.get_versions()
     assert v.keys() == {"scheduler", "client", "workers"}
     assert v["workers"].keys() == {b.address}

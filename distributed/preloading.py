@@ -15,7 +15,7 @@ import click
 
 from dask.utils import tmpfile
 
-from distributed.core import Server
+from distributed.node import ServerNode
 from distributed.utils import import_file
 
 if TYPE_CHECKING:
@@ -167,7 +167,7 @@ class Preload:
         Path of a directory where files should be copied
     """
 
-    dask_object: Server | Client
+    dask_object: ServerNode | Client
     name: str
     argv: list[str]
     file_dir: str | None
@@ -175,7 +175,7 @@ class Preload:
 
     def __init__(
         self,
-        dask_object: Server | Client,
+        dask_object: ServerNode | Client,
         name: str,
         argv: Iterable[str],
         file_dir: str | None,
@@ -250,7 +250,7 @@ class PreloadManager(Sequence[Preload]):
 
 
 def process_preloads(
-    dask_server: Server | Client,
+    dask_server: ServerNode | Client,
     preload: str | list[str],
     preload_argv: list[str] | list[list[str]],
     *,

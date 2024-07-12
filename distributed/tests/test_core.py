@@ -6,8 +6,6 @@ import logging
 import os
 import random
 import socket
-import sys
-import threading
 import time as timemod
 import weakref
 from unittest import mock
@@ -19,7 +17,6 @@ import dask
 
 from distributed.batched import BatchedSend
 from distributed.comm.core import CommClosedError
-from distributed.comm.registry import backends
 from distributed.comm.tcp import TCPBackend, TCPListener
 from distributed.core import (
     AsyncTaskGroup,
@@ -47,8 +44,6 @@ from distributed.utils_test import (
     assert_can_connect_locally_4,
     assert_can_connect_locally_6,
     assert_cannot_connect,
-    captured_logger,
-    gen_cluster,
     gen_test,
     has_ipv6,
     inc,
@@ -232,44 +227,6 @@ async def test_async_task_group_stop_cancels_long_running():
     assert task
     assert task.cancelled()
     assert not flag
-
-
-@gen_test()
-async def test_server_status_is_always_enum():
-    """Assignments with strings is forbidden"""
-    server = Server({})
-    assert isinstance(server.status, Status)
-    assert server.status != Status.stopped
-    server.status = Status.stopped
-    assert server.status == Status.stopped
-    with pytest.raises(TypeError):
-        server.status = "running"
-
-
-@gen_test()
-async def test_server_assign_assign_enum_is_quiet():
-    """That would be the default in user code"""
-    server = Server({})
-    server.status = Status.running
-
-
-@gen_test()
-async def test_server_status_compare_enum_is_quiet():
-    """That would be the default in user code"""
-    server = Server({})
-    # Note: We only want to assert that this comparison does not
-    # raise an error/warning. We do not want to assert its result.
-    server.status == Status.running  # noqa: B015
-
-
-@gen_test(config={"distributed.admin.system-monitor.gil.enabled": True})
-async def test_server_close_stops_gil_monitoring():
-    pytest.importorskip("gilknocker")
-
-    server = Server({})
-    assert server.monitor._gilknocker.is_running
-    await server.close()
-    assert not server.monitor._gilknocker.is_running
 
 
 @gen_test()
@@ -1006,48 +963,6 @@ async def test_connection_pool_remove():
     await asyncio.gather(*[server.close() for server in servers])
 
 
-@gen_test()
-async def test_counters():
-    async with Server({"div": stream_div}) as server:
-        await server.listen("tcp://")
-
-        async with rpc(server.address) as r:
-            for _ in range(2):
-                await r.identity()
-            with pytest.raises(ZeroDivisionError):
-                await r.div(x=1, y=0)
-
-            c = server.counters
-            assert c["op"].components[0] == {"identity": 2, "div": 1}
-
-
-@gen_cluster(config={"distributed.admin.tick.interval": "20 ms"})
-async def test_ticks(s, a, b):
-    pytest.importorskip("crick")
-    await asyncio.sleep(0.1)
-    c = s.digests["tick-duration"]
-    assert c.size()
-    assert 0.01 < c.components[0].quantile(0.5) < 0.5
-
-
-@gen_cluster(config={"distributed.admin.tick.interval": "20 ms"})
-async def test_tick_logging(s, a, b):
-    pytest.importorskip("crick")
-    from distributed import core
-
-    old = core.tick_maximum_delay
-    core.tick_maximum_delay = 0.001
-    try:
-        with captured_logger("distributed.core") as sio:
-            await asyncio.sleep(0.1)
-
-        text = sio.getvalue()
-        assert "unresponsive" in text
-        assert "Scheduler" in text or "Worker" in text
-    finally:
-        core.tick_maximum_delay = old
-
-
 @pytest.mark.parametrize("compression", list(compressions))
 @pytest.mark.parametrize("serialize", [echo_serialize, echo_no_serialize])
 @gen_test()
@@ -1074,11 +989,6 @@ async def test_rpc_serialization():
         async with rpc(server.address, serializers=["msgpack", "pickle"]) as r:
             result = await r.echo(x=to_serialize(inc))
             assert result == {"result": inc}
-
-
-@gen_cluster()
-async def test_thread_id(s, a, b):
-    assert s.thread_id == a.thread_id == b.thread_id == threading.get_ident()
 
 
 @gen_test()
@@ -1146,7 +1056,7 @@ async def test_close_properly():
         await asyncio.sleep(2000000)
 
     server = await Server({"sleep": sleep})
-    assert server.status == Status.running
+    assert not server.stopped
     ports = [8881, 8882, 8883]
 
     # Previously we close *one* listener, therefore ensure we always use more
@@ -1175,7 +1085,7 @@ async def test_close_properly():
             await assert_cannot_connect(f"tcp://{ip}:{port}")
 
         # weakref set/dict should be cleaned up
-        assert not len(server._ongoing_background_tasks)
+        assert not len(server._handle_comm_tasks)
 
 
 @gen_test()
@@ -1269,29 +1179,6 @@ async def test_server_comms_mark_active_handlers():
             assert server2.outgoing_comms_active == 0
             assert server2.outgoing_comms_open == 1
             validate_dict(server)
-
-
-@gen_test()
-async def test_server_sys_path_local_directory_cleanup(tmp_path, monkeypatch):
-    local_directory = str(tmp_path / "dask-scratch-space")
-
-    # Ensure `local_directory` is removed from `sys.path` as part of the
-    # `Server` shutdown process
-    assert not any(i.startswith(local_directory) for i in sys.path)
-    async with Server({}, local_directory=local_directory):
-        assert sys.path[0].startswith(local_directory)
-    assert not any(i.startswith(local_directory) for i in sys.path)
-
-    # Ensure `local_directory` isn't removed from `sys.path` if it
-    # was already there before the `Server` started
-    monkeypatch.setattr("sys.path", [local_directory] + sys.path)
-    assert sys.path[0].startswith(local_directory)
-    # NOTE: `needs_workdir=False` is needed to make sure the same path added
-    # to `sys.path` above is used by the `Server` (a subdirectory is created
-    # by default).
-    async with Server({}, local_directory=local_directory, needs_workdir=False):
-        assert sys.path[0].startswith(local_directory)
-    assert sys.path[0].startswith(local_directory)
 
 
 @pytest.mark.parametrize("close_via_rpc", [True, False])
@@ -1398,15 +1285,6 @@ class AsyncStopTCPListener(TCPListener):
 
 class TCPAsyncListenerBackend(TCPBackend):
     _listener_class = AsyncStopTCPListener
-
-
-@gen_test()
-async def test_async_listener_stop(monkeypatch):
-    monkeypatch.setitem(backends, "tcp", TCPAsyncListenerBackend())
-    with pytest.warns(DeprecationWarning):
-        async with Server({}) as s:
-            await s.listen(0)
-            assert s.listeners
 
 
 @gen_test()

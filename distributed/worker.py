@@ -73,7 +73,6 @@ from distributed.core import (
     PooledRPCCall,
     Status,
     coerce_to_address,
-    context_meter_to_server_digest,
     error_message,
     pingpong,
 )
@@ -85,7 +84,7 @@ from distributed.diskutils import WorkSpace
 from distributed.exceptions import Reschedule
 from distributed.http import get_handlers
 from distributed.metrics import context_meter, thread_time, time
-from distributed.node import ServerNode
+from distributed.node import ServerNode, context_meter_to_node_digest
 from distributed.proctitle import setproctitle
 from distributed.protocol import pickle, to_serialize
 from distributed.protocol.serialize import _is_dumpable
@@ -153,7 +152,7 @@ from distributed.worker_state_machine import (
 
 if TYPE_CHECKING:
     # FIXME import from typing (needs Python >=3.10)
-    from typing_extensions import ParamSpec
+    from typing_extensions import ParamSpec, Self
 
     # Circular imports
     from distributed.client import Client
@@ -784,7 +783,7 @@ class Worker(BaseWorker, ServerNode):
         )
         BaseWorker.__init__(self, state)
 
-        self.scheduler = self.rpc(scheduler_addr)
+        self.scheduler = self.server.rpc(scheduler_addr)
         self.execution_state = {
             "scheduler": self.scheduler.address,
             "ioloop": self.loop,
@@ -939,9 +938,9 @@ class Worker(BaseWorker, ServerNode):
     ##################
 
     def __repr__(self) -> str:
-        name = f", name: {self.name}" if self.name != self.address_safe else ""
+        name = f", name: {self.name}" if self.name != self.server.address_safe else ""
         return (
-            f"<{self.__class__.__name__} {self.address_safe!r}{name}, "
+            f"<{self.__class__.__name__} {self.server.address_safe!r}{name}, "
             f"status: {self.status.name}, "
             f"stored: {len(self.data)}, "
             f"running: {self.state.executing_count}/{self.state.nthreads}, "
@@ -986,7 +985,7 @@ class Worker(BaseWorker, ServerNode):
     @property
     def worker_address(self):
         """For API compatibility with Nanny"""
-        return self.address
+        return self.server.address
 
     @property
     def executor(self):
@@ -1164,7 +1163,7 @@ class Worker(BaseWorker, ServerNode):
         self.periodic_callbacks["heartbeat"].stop()
         start = time()
         if self.contact_address is None:
-            self.contact_address = self.address
+            self.contact_address = self.server.address
         logger.info("-" * 49)
 
         # Worker reconnection is not supported
@@ -1244,7 +1243,7 @@ class Worker(BaseWorker, ServerNode):
         self.digest_metric("latency", latency)
 
     async def heartbeat(self) -> None:
-        logger.debug("Heartbeat: %s", self.address)
+        logger.debug("Heartbeat: %s", self.server.address)
         try:
             start = time()
             response = await retry_operation(
@@ -1297,7 +1296,7 @@ class Worker(BaseWorker, ServerNode):
     @fail_hard
     async def handle_scheduler(self, comm: Comm) -> None:
         try:
-            await self.handle_stream(comm)
+            await self.server.handle_stream(comm)
         finally:
             await self.close(reason="worker-handle-scheduler-connection-broken")
 
@@ -1328,7 +1327,7 @@ class Worker(BaseWorker, ServerNode):
                 new_failed_keys,
                 new_missing_workers,
             ) = await gather_from_workers(
-                who_has=to_gather, rpc=self.rpc, who=self.address
+                who_has=to_gather, rpc=self.server.rpc, who=self.server.address
             )
             self.update_data(data, stimulus_id=stimulus_id)
             del data
@@ -1365,7 +1364,7 @@ class Worker(BaseWorker, ServerNode):
     # Lifecycle #
     #############
 
-    async def start_unsafe(self):
+    async def start_unsafe(self) -> Self:
         await super().start_unsafe()
 
         enable_gc_diagnosis()
@@ -1386,7 +1385,7 @@ class Worker(BaseWorker, ServerNode):
                     get_address_host(self.scheduler.address)
                 )
             try:
-                await self.listen(start_address, **kwargs)
+                await self.server.listen(start_address, **kwargs)
             except OSError as e:
                 if len(ports) > 1 and e.errno == errno.EADDRINUSE:
                     continue
@@ -1420,10 +1419,10 @@ class Worker(BaseWorker, ServerNode):
                     self,
                     prefix=self._http_prefix,
                 )
-        self.ip = get_address_host(self.address)
+        self.ip = get_address_host(self.server.address)
 
         if self.name is None:
-            self.name = self.address
+            self.name = self.server.address
 
         await self.preloads.start()
 
@@ -1433,13 +1432,17 @@ class Worker(BaseWorker, ServerNode):
         self.start_services(self.ip)
 
         try:
-            listening_address = "%s%s:%d" % (self.listener.prefix, self.ip, self.port)
+            listening_address = "%s%s:%d" % (
+                self.server.listener.prefix,
+                self.ip,
+                self.server.port,
+            )
         except Exception:
-            listening_address = f"{self.listener.prefix}{self.ip}"
+            listening_address = f"{self.server.listener.prefix}{self.ip}"
 
-        logger.info("      Start worker at: %26s", self.address)
+        logger.info("      Start worker at: %26s", self.server.address)
         logger.info("         Listening to: %26s", listening_address)
-        if self.name != self.address_safe:
+        if self.name != self.server.address_safe:
             # only if name was not None
             logger.info("          Worker name: %26s", self.name)
         for k, v in self.service_ports.items():
@@ -1454,7 +1457,7 @@ class Worker(BaseWorker, ServerNode):
             )
         logger.info("      Local Directory: %26s", self.local_directory)
 
-        setproctitle("dask worker [%s]" % self.address)
+        setproctitle("dask worker [%s]" % self.server.address)
 
         plugins_msgs = await asyncio.gather(
             *(
@@ -1474,7 +1477,7 @@ class Worker(BaseWorker, ServerNode):
             raise plugins_exceptions[0]
 
         self._pending_plugins = ()
-        self.state.address = self.address
+        self.state.address = self.server.address
         await self._register_with_scheduler()
         self.start_periodic_callbacks()
         return self
@@ -1535,13 +1538,17 @@ class Worker(BaseWorker, ServerNode):
         disable_gc_diagnosis()
 
         try:
-            self.log_event(self.address, {"action": "closing-worker", "reason": reason})
+            self.log_event(
+                self.server.address, {"action": "closing-worker", "reason": reason}
+            )
         except Exception:
             # This can happen when the Server is not up yet
             logger.exception("Failed to log closing event")
 
         try:
-            logger.info("Stopping worker at %s. Reason: %s", self.address, reason)
+            logger.info(
+                "Stopping worker at %s. Reason: %s", self.server.address, reason
+            )
         except ValueError:  # address not available if already closed
             logger.info("Stopping worker. Reason: %s", reason)
         if self.status not in WORKER_ANY_RUNNING:
@@ -1554,7 +1561,7 @@ class Worker(BaseWorker, ServerNode):
         setproctitle("dask worker [closing]")
 
         if nanny and self.nanny:
-            with self.rpc(self.nanny) as r:
+            with self.server.rpc(self.nanny) as r:
                 await r.close_gracefully(reason=reason)
 
         # Cancel async instructions
@@ -1602,8 +1609,7 @@ class Worker(BaseWorker, ServerNode):
                         # otherwise
                         c.close()
 
-        await self._stop_listeners()
-        await self.rpc.close()
+        await self.server.close()
 
         # Give some time for a UCX scheduler to complete closing endpoints
         # before closing self.batched_stream, otherwise the local endpoint
@@ -1654,7 +1660,6 @@ class Worker(BaseWorker, ServerNode):
                         executor=executor, wait=executor_wait
                     )  # Just run it directly
 
-        self.stop()
         self.status = Status.closed
         setproctitle("dask worker [closed]")
 
@@ -1677,12 +1682,14 @@ class Worker(BaseWorker, ServerNode):
         if self.status == Status.closed:
             return
 
-        logger.info("Closing worker gracefully: %s. Reason: %s", self.address, reason)
+        logger.info(
+            "Closing worker gracefully: %s. Reason: %s", self.server.address, reason
+        )
         # Wait for all tasks to leave the worker and don't accept any new ones.
         # Scheduler.retire_workers will set the status to closing_gracefully and push it
         # back to this worker.
         await self.scheduler.retire_workers(
-            workers=[self.address],
+            workers=[self.server.address],
             close_workers=False,
             remove=True,
             stimulus_id=f"worker-close-gracefully-{time()}",
@@ -1718,7 +1725,7 @@ class Worker(BaseWorker, ServerNode):
 
         self.stream_comms[address].send(msg)
 
-    @context_meter_to_server_digest("get-data")
+    @context_meter_to_node_digest("get-data")
     async def get_data(
         self,
         comm: Comm,
@@ -1728,7 +1735,7 @@ class Worker(BaseWorker, ServerNode):
     ) -> GetDataBusy | Literal[Status.dont_reply]:
         max_connections = self.transfer_outgoing_count_limit
         # Allow same-host connections more liberally
-        if get_address_host(comm.peer_address) == get_address_host(self.address):
+        if get_address_host(comm.peer_address) == get_address_host(self.server.address):
             max_connections = max_connections * 2
 
         if self.status == Status.paused:
@@ -1746,7 +1753,7 @@ class Worker(BaseWorker, ServerNode):
             logger.debug(
                 "Worker %s has too many open connections to respond to data request "
                 "from %s (%d/%d).%s",
-                self.address,
+                self.server.address,
                 who,
                 self.transfer_outgoing_count,
                 max_connections,
@@ -1766,7 +1773,7 @@ class Worker(BaseWorker, ServerNode):
                     from distributed.actor import Actor
 
                     data[k] = Actor(
-                        type(self.state.actors[k]), self.address, k, worker=self
+                        type(self.state.actors[k]), self.server.address, k, worker=self
                     )
 
         msg = {"status": "OK", "data": {k: to_serialize(v) for k, v in data.items()}}
@@ -1785,7 +1792,7 @@ class Worker(BaseWorker, ServerNode):
         except OSError:
             logger.exception(
                 "failed during get data with %s -> %s",
-                self.address,
+                self.server.address,
                 who,
             )
             comm.abort()
@@ -2057,7 +2064,10 @@ class Worker(BaseWorker, ServerNode):
         try:
             with context_meter.meter("network", func=time) as m:
                 response = await get_data_from_worker(
-                    rpc=self.rpc, keys=to_gather, worker=worker, who=self.address
+                    rpc=self.server.rpc,
+                    keys=to_gather,
+                    worker=worker,
+                    who=self.server.address,
                 )
 
             if response["status"] == "busy":
@@ -2400,7 +2410,9 @@ class Worker(BaseWorker, ServerNode):
             except KeyError:
                 from distributed.actor import Actor  # TODO: create local actor
 
-                data[k] = Actor(type(self.state.actors[k]), self.address, k, self)
+                data[k] = Actor(
+                    type(self.state.actors[k]), self.server.address, k, self
+                )
         args2 = pack_data(args, data, key_types=(bytes, str, tuple))
         kwargs2 = pack_data(kwargs, data, key_types=(bytes, str, tuple))
         stop = time()
@@ -2461,7 +2473,7 @@ class Worker(BaseWorker, ServerNode):
     ):
         now = time() + self.scheduler_delay
         if server:
-            history = self.io_loop.profile  # type: ignore[attr-defined]
+            history = self.io_loop.profile
         elif key is None:
             history = self.profile_history
         else:
@@ -2540,7 +2552,7 @@ class Worker(BaseWorker, ServerNode):
         return await self.loop.run_in_executor(self.executor, benchmark_memory)
 
     async def benchmark_network(self, address: str) -> dict[str, float]:
-        return await benchmark_network(rpc=self.rpc, address=address)
+        return await benchmark_network(rpc=self.server.rpc, address=address)
 
     #######################################
     # Worker Clients (advanced workloads) #
@@ -2636,7 +2648,7 @@ class Worker(BaseWorker, ServerNode):
         return self.active_threads[threading.get_ident()]
 
     def _handle_remove_worker(self, worker: str, stimulus_id: str) -> None:
-        self.rpc.remove(worker)
+        self.server.rpc.remove(worker)
         self.handle_stimulus(RemoveWorkerEvent(worker=worker, stimulus_id=stimulus_id))
 
     def validate_state(self) -> None:

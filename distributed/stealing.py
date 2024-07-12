@@ -116,7 +116,7 @@ class WorkStealing(SchedulerPlugin):
             "request_cost_total": defaultdict(int),
         }
         self._request_counter = 0
-        self.scheduler.stream_handlers["steal-response"] = self.move_task_confirm
+        self.scheduler.server.stream_handlers["steal-response"] = self.move_task_confirm
 
     async def start(self, scheduler: Any = None) -> None:
         """Start the background coroutine to balance the tasks on the cluster.

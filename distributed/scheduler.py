@@ -3945,7 +3945,7 @@ class Scheduler(SchedulerState, ServerNode):
 
         setproctitle("dask scheduler [not started]")
         Scheduler._instances.add(self)
-        self.rpc.allow_offload = False
+        self.server.rpc.allow_offload = False
 
     ##################
     # Administration #
@@ -3953,7 +3953,7 @@ class Scheduler(SchedulerState, ServerNode):
 
     def __repr__(self) -> str:
         return (
-            f"<Scheduler {self.address_safe!r}, "
+            f"<Scheduler {self.server.address_safe!r}, "
             f"workers: {len(self.workers)}, "
             f"cores: {self.total_nthreads}, "
             f"tasks: {len(self.tasks)}>"
@@ -3961,7 +3961,7 @@ class Scheduler(SchedulerState, ServerNode):
 
     def _repr_html_(self) -> str:
         return get_template("scheduler.html.j2").render(
-            address=self.address,
+            address=self.server.address,
             workers=self.workers,
             threads=self.total_nthreads,
             tasks=self.tasks,
@@ -3972,7 +3972,7 @@ class Scheduler(SchedulerState, ServerNode):
         d = {
             "type": type(self).__name__,
             "id": str(self.id),
-            "address": self.address,
+            "address": self.server.address,
             "services": {key: v.port for (key, v) in self.services.items()},
             "started": self.time_started,
             "workers": {
@@ -4095,25 +4095,25 @@ class Scheduler(SchedulerState, ServerNode):
         self._clear_task_state()
 
         for addr in self._start_address:
-            await self.listen(
+            await self.server.listen(
                 addr,
                 allow_offload=False,
                 handshake_overrides={"pickle-protocol": 4, "compression": None},
                 **self.security.get_listen_args("scheduler"),
             )
-            self.ip = get_address_host(self.listen_address)
+            self.ip = get_address_host(self.server.listen_address)
             listen_ip = self.ip
 
             if listen_ip == "0.0.0.0":
                 listen_ip = ""
 
-        if self.address.startswith("inproc://"):
+        if self.server.address.startswith("inproc://"):
             listen_ip = "localhost"
 
         # Services listen on all addresses
         self.start_services(listen_ip)
 
-        for listener in self.listeners:
+        for listener in self.server.listeners:
             logger.info("  Scheduler at: %25s", listener.contact_address)
         for name, server in self.services.items():
             if name == "dashboard":
@@ -4147,9 +4147,11 @@ class Scheduler(SchedulerState, ServerNode):
 
         if self.jupyter:
             # Allow insecure communications from local users
-            if self.address.startswith("tls://"):
-                await self.listen("tcp://localhost:0")
-            os.environ["DASK_SCHEDULER_ADDRESS"] = self.listeners[-1].contact_address
+            if self.server.address.startswith("tls://"):
+                await self.server.listen("tcp://localhost:0")
+            os.environ["DASK_SCHEDULER_ADDRESS"] = self.server.listeners[
+                -1
+            ].contact_address
 
         await asyncio.gather(
             *[plugin.start(self) for plugin in list(self.plugins.values())]
@@ -4157,7 +4159,7 @@ class Scheduler(SchedulerState, ServerNode):
 
         self.start_periodic_callbacks()
 
-        setproctitle(f"dask scheduler [{self.address}]")
+        setproctitle(f"dask scheduler [{self.server.address}]")
         return self
 
     async def close(self, fast=None, close_workers=None, reason=""):
@@ -4228,10 +4230,6 @@ class Scheduler(SchedulerState, ServerNode):
         for comm in self.client_comms.values():
             comm.abort()
 
-        await self.rpc.close()
-
-        self.status = Status.closed
-        self.stop()
         await super().close()
 
         setproctitle("dask scheduler [closed]")
@@ -5287,7 +5285,7 @@ class Scheduler(SchedulerState, ServerNode):
         if not dh_addresses:
             del self.host_info[host]
 
-        self.rpc.remove(address)
+        self.server.rpc.remove(address)
         del self.stream_comms[address]
         del self.aliases[ws.name]
         self.idle.pop(ws.address, None)
@@ -5776,7 +5774,7 @@ class Scheduler(SchedulerState, ServerNode):
             bcomm.send(msg)
 
             try:
-                await self.handle_stream(comm=comm, extra={"client": client})
+                await self.server.handle_stream(comm=comm, extra={"client": client})
             finally:
                 self.remove_client(client=client, stimulus_id=f"remove-client-{time()}")
                 logger.debug("Finished handling client %s", client)
@@ -5997,7 +5995,7 @@ class Scheduler(SchedulerState, ServerNode):
         worker_comm.start(comm)
         logger.info("Starting worker compute stream, %s", worker)
         try:
-            await self.handle_stream(comm=comm, extra={"worker": worker})
+            await self.server.handle_stream(comm=comm, extra={"worker": worker})
         finally:
             if worker in self.stream_comms:
                 worker_comm.abort()
@@ -6199,9 +6197,10 @@ class Scheduler(SchedulerState, ServerNode):
             await asyncio.sleep(0.1)
 
         assert isinstance(data, dict)
-
         workers = list(ws.address for ws in wss)
-        keys, who_has, nbytes = await scatter_to_workers(workers, data, rpc=self.rpc)
+        keys, who_has, nbytes = await scatter_to_workers(
+            workers, data, rpc=self.server.rpc
+        )
 
         self.update_data(who_has=who_has, nbytes=nbytes, client=client)
 
@@ -6238,7 +6237,7 @@ class Scheduler(SchedulerState, ServerNode):
                 new_failed_keys,
                 new_missing_workers,
             ) = await gather_from_workers(
-                who_has, rpc=self.rpc, serializers=serializers
+                who_has, rpc=self.server.rpc, serializers=serializers
             )
             data.update(new_data)
             failed_keys += new_failed_keys
@@ -6524,14 +6523,14 @@ class Scheduler(SchedulerState, ServerNode):
 
         async def send_message(addr):
             try:
-                comm = await self.rpc.connect(addr)
+                comm = await self.server.rpc.connect(addr)
                 comm.name = "Scheduler Broadcast"
                 try:
                     resp = await send_recv(
                         comm, close=True, serializers=serializers, **msg
                     )
                 finally:
-                    self.rpc.reuse(addr, comm)
+                    self.server.rpc.reuse(addr, comm)
                 return resp
             except Exception as e:
                 logger.error(f"broadcast to {addr} failed: {e.__class__.__name__}: {e}")
@@ -6581,7 +6580,7 @@ class Scheduler(SchedulerState, ServerNode):
         """
         try:
             result = await retry_operation(
-                self.rpc(addr=worker_address).gather, who_has=who_has
+                self.server.rpc(addr=worker_address).gather, who_has=who_has
             )
         except OSError as e:
             # This can happen e.g. if the worker is going through controlled shutdown;
@@ -6632,7 +6631,7 @@ class Scheduler(SchedulerState, ServerNode):
         """
         try:
             await retry_operation(
-                self.rpc(addr=worker_address).free_keys,
+                self.server.rpc(addr=worker_address).free_keys,
                 keys=list(keys),
                 stimulus_id=f"delete-data-{time()}",
             )
@@ -7748,7 +7747,7 @@ class Scheduler(SchedulerState, ServerNode):
             return {}
 
         results = await asyncio.gather(
-            *(self.rpc(w).call_stack(keys=v) for w, v in workers.items())
+            *(self.server.rpc(w).call_stack(keys=v) for w, v in workers.items())
         )
         response = {w: r for w, r in zip(workers, results) if r}
         return response
@@ -7791,7 +7790,8 @@ class Scheduler(SchedulerState, ServerNode):
         # Randomize the connections to even out the mean measures.
         random.shuffle(workers)
         futures = [
-            self.rpc(a).benchmark_network(address=b) for a, b in partition(2, workers)
+            self.server.rpc(a).benchmark_network(address=b)
+            for a, b in partition(2, workers)
         ]
         responses = await asyncio.gather(*futures)
 
@@ -8175,7 +8175,9 @@ class Scheduler(SchedulerState, ServerNode):
 
         results = await asyncio.gather(
             *(
-                self.rpc(w).profile(start=start, stop=stop, key=key, server=server)
+                self.server.rpc(w).profile(
+                    start=start, stop=stop, key=key, server=server
+                )
                 for w in workers
             ),
             return_exceptions=True,
@@ -8206,7 +8208,10 @@ class Scheduler(SchedulerState, ServerNode):
         else:
             workers = set(self.workers) & set(workers)
         results: Sequence[Any] = await asyncio.gather(
-            *(self.rpc(w).profile_metadata(start=start, stop=stop) for w in workers),
+            *(
+                self.server.rpc(w).profile_metadata(start=start, stop=stop)
+                for w in workers
+            ),
             return_exceptions=True,
         )
 
@@ -8342,7 +8347,7 @@ class Scheduler(SchedulerState, ServerNode):
             time=format_time(stop - start),
             ntasks=total_tasks,
             tasks_timings=tasks_timings,
-            address=self.address,
+            address=self.server.address,
             nworkers=len(self.workers),
             threads=sum(ws.nthreads for ws in self.workers.values()),
             memory=format_bytes(sum(ws.memory_limit for ws in self.workers.values())),
@@ -8448,7 +8453,9 @@ class Scheduler(SchedulerState, ServerNode):
             starts = {}
         results = await asyncio.gather(
             *(
-                self.rpc(w).get_monitor_info(recent=recent, start=starts.get(w, 0))
+                self.server.rpc(w).get_monitor_info(
+                    recent=recent, start=starts.get(w, 0)
+                )
                 for w in self.workers
             )
         )

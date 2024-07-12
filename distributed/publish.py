@@ -33,8 +33,8 @@ class PublishExtension:
             "publish_flush_batched_send": self.flush_receive,
         }
 
-        self.scheduler.handlers.update(handlers)
-        self.scheduler.stream_handlers.update(stream_handlers)
+        self.scheduler.server.handlers.update(handlers)
+        self.scheduler.server.stream_handlers.update(stream_handlers)
         self._flush_received = defaultdict(asyncio.Event)
 
     def flush_receive(self, uid, **kwargs):

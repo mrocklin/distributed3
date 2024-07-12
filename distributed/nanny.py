@@ -268,7 +268,7 @@ class Nanny(ServerNode):
         self.silence_logs = silence_logs
 
         self.plugins: dict[str, NannyPlugin] = {}
-        self.scheduler = self.rpc(self.scheduler_addr)
+        self.scheduler = self.server.rpc(self.scheduler_addr)
         self.memory_manager = NannyMemoryManager(self, memory_limit=memory_limit)
 
         if (
@@ -334,7 +334,7 @@ class Nanny(ServerNode):
                 security=self.security,
             )
             try:
-                await self.listen(
+                await self.server.listen(
                     start_address, **self.security.get_listen_args("worker")
                 )
             except OSError as e:
@@ -351,21 +351,21 @@ class Nanny(ServerNode):
                 f"with port {self._start_port}"
             )
 
-        self.ip = get_address_host(self.address)
+        self.ip = get_address_host(self.server.address)
 
         await self.preloads.start()
         saddr = self.scheduler.addr
-        comm = await self.rpc.connect(saddr)
+        comm = await self.server.rpc.connect(saddr)
         comm.name = "Nanny->Scheduler (registration)"
 
         try:
-            await comm.write({"op": "register_nanny", "address": self.address})
+            await comm.write({"op": "register_nanny", "address": self.server.address})
             msg = await comm.read()
             try:
                 for name, plugin in msg["nanny-plugins"].items():
                     await self.plugin_add(plugin=plugin, name=name)
 
-                logger.info("        Start Nanny at: %r", self.address)
+                logger.info("        Start Nanny at: %r", self.server.address)
                 response = await self.instantiate()
 
                 if response != Status.running:
@@ -410,7 +410,7 @@ class Nanny(ServerNode):
                 nthreads=self.nthreads,
                 local_directory=self._original_local_dir,
                 services=self.services,
-                nanny=self.address,
+                nanny=self.server.address,
                 name=self.name,
                 memory_limit=self.memory_manager.memory_limit,
                 resources=self.resources,
@@ -589,7 +589,9 @@ class Nanny(ServerNode):
         """
         self.status = Status.closing_gracefully
         logger.info(
-            "Closing Nanny gracefully at %r. Reason: %s", self.address_safe, reason
+            "Closing Nanny gracefully at %r. Reason: %s",
+            self.server.address_safe,
+            reason,
         )
 
     async def close(  # type:ignore[override]
@@ -606,7 +608,7 @@ class Nanny(ServerNode):
             return "OK"
 
         self.status = Status.closing
-        logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
+        logger.info("Closing Nanny at %r. Reason: %s", self.server.address_safe, reason)
 
         await self.preloads.teardown()
 
@@ -618,13 +620,10 @@ class Nanny(ServerNode):
 
         await asyncio.gather(*(td for td in teardowns if isawaitable(td)))
 
-        self.stop()
         if self.process is not None:
             await self.kill(timeout=timeout, reason=reason)
 
         self.process = None
-        await self.rpc.close()
-        self.status = Status.closed
         await super().close()
         self.__exit_stack.__exit__(None, None, None)
         return "OK"

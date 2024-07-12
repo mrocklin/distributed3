@@ -32,7 +32,7 @@ class QueueExtension:
         self.client_refcount = dict()
         self.future_refcount = defaultdict(int)
 
-        self.scheduler.handlers.update(
+        self.scheduler.server.handlers.update(
             {
                 "queue_create": self.create,
                 "queue_put": self.put,
@@ -41,7 +41,7 @@ class QueueExtension:
             }
         )
 
-        self.scheduler.stream_handlers.update(
+        self.scheduler.server.stream_handlers.update(
             {"queue-future-release": self.future_release, "queue_release": self.release}
         )
 

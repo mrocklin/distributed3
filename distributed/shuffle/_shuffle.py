@@ -594,8 +594,8 @@ class DataFrameShuffleSpec(ShuffleSpec[int]):
                 f"shuffle-{self.id}-{run_id}",
             ),
             executor=plugin._executor,
-            local_address=plugin.worker.address,
-            rpc=plugin.worker.rpc,
+            local_address=plugin.worker.server.address,
+            rpc=plugin.worker.server.rpc,
             digest_metric=plugin.worker.digest_metric,
             scheduler=plugin.worker.scheduler,
             memory_limiter_disk=plugin.memory_limiter_disk

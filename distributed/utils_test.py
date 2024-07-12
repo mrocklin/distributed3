@@ -796,7 +796,7 @@ async def start_cluster(
     ):
         await asyncio.sleep(0.01)
         if time() > start + 30:
-            await asyncio.gather(*(w.close(timeout=1) for w in workers))
+            await asyncio.gather(*(w.close() for w in workers))
             await s.close()
             check_invalid_worker_transitions(s)
             check_invalid_task_states(s)
@@ -857,7 +857,6 @@ async def end_cluster(s, workers):
 
     await asyncio.gather(*(end_worker(w) for w in workers))
     await s.close()  # wait until scheduler stops completely
-    s.stop()
     check_invalid_worker_transitions(s)
     check_invalid_task_states(s)
     check_worker_fail_hard(s)

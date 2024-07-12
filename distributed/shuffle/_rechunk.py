@@ -789,7 +789,7 @@ class ArrayRechunkSpec(ShuffleSpec[NDIndex]):
             ),
             executor=plugin._executor,
             local_address=plugin.worker.address,
-            rpc=plugin.worker.rpc,
+            rpc=plugin.worker.server.rpc,
             digest_metric=plugin.worker.digest_metric,
             scheduler=plugin.worker.scheduler,
             memory_limiter_disk=plugin.memory_limiter_disk,

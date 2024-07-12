@@ -27,7 +27,7 @@ class LockExtension:
         self.events = defaultdict(deque)
         self.ids = dict()
 
-        self.scheduler.handlers.update(
+        self.scheduler.server.handlers.update(
             {"lock_acquire": self.acquire, "lock_release": self.release}
         )
 
