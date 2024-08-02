@@ -381,7 +381,7 @@ API
 .. autoclass:: ClientState
     :members:
 
-.. autofunction:: decide_worker
+.. autofunction:: _decide_worker
 
 .. autoclass:: MemoryState
     :members:

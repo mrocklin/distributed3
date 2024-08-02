@@ -287,19 +287,19 @@ async def test_override_is_rootish(c, s):
     await async_poll_for(lambda: "x" in s.tasks, timeout=5)
     ts_x = s.tasks["x"]
     assert ts_x._rootish is None
-    assert s.is_rootish(ts_x)
+    assert s._is_rootish(ts_x)
 
     ts_x._rootish = False
-    assert not s.is_rootish(ts_x)
+    assert not s._is_rootish(ts_x)
 
     y = c.submit(lambda y: y + 1, 1, key="y", workers=["not-existing"])
     await async_poll_for(lambda: "y" in s.tasks, timeout=5)
     ts_y = s.tasks["y"]
     assert ts_y._rootish is None
-    assert not s.is_rootish(ts_y)
+    assert not s._is_rootish(ts_y)
 
     ts_y._rootish = True
-    assert s.is_rootish(ts_y)
+    assert s._is_rootish(ts_y)
 
 
 @pytest.mark.skipif(
@@ -345,14 +345,14 @@ async def test_decide_worker_rootish_while_last_worker_is_retiring(c, s, a):
         # guarantee that all the y tasks are already on the scheduler. Only
         # after at least 5 have been registered, will the task be flagged as
         # rootish
-        while "y-2" not in s.tasks or not s.is_rootish(s.tasks["y-2"]):
+        while "y-2" not in s.tasks or not s._is_rootish(s.tasks["y-2"]):
             await asyncio.sleep(0.01)
 
         # - y-2 has no restrictions
         # - TaskGroup(y) has more than 4 tasks (total_nthreads * 2)
         # - TaskGroup(y) has less than 5 dependency groups
         # - TaskGroup(y) has less than 5 dependency tasks
-        assert s.is_rootish(s.tasks["y-2"])
+        assert s._is_rootish(s.tasks["y-2"])
 
         await evx[0].set()
         await wait_for_state("y-0", "processing", s)
@@ -4599,9 +4599,9 @@ async def test_deadlock_resubmit_queued_tasks_fast(c, s, a, rootish):
         # Just to verify our assumptions in case the definition changes. This is
         # currently a bit brittle
         if rootish:
-            assert all(s.is_rootish(s.tasks[k]) for k in keys)
+            assert all(s._is_rootish(s.tasks[k]) for k in keys)
         else:
-            assert not any(s.is_rootish(s.tasks[k]) for k in keys)
+            assert not any(s._is_rootish(s.tasks[k]) for k in keys)
 
     f1 = submit_tasks()
     # Make sure that the worker is properly saturated

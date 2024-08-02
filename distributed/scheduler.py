@@ -1116,7 +1116,7 @@ class TaskGroup(TaskCollection):
     dependencies: set[TaskGroup]
 
     #: The worker most recently assigned a task from this group, or None when the group
-    #: is not identified to be root-like by `SchedulerState.decide_worker`.
+    #: is not identified to be root-like by `SchedulerState._decide_worker`.
     last_worker: WorkerState | None
 
     #: If `last_worker` is not None, the number of times that worker should be assigned
@@ -2192,14 +2192,14 @@ class SchedulerState:
             assert not ts.actor, f"Actors can't be in `no-worker`: {ts}"
             assert ts in self.unrunnable
 
-        if ws := self.decide_worker_non_rootish(ts):
+        if ws := self._decide_worker_non_rootish(ts):
             self.unrunnable.discard(ts)
             return self._add_to_processing(ts, ws, stimulus_id=stimulus_id)
         # If no worker, task just stays in `no-worker`
 
         return {}, {}, {}
 
-    def decide_worker_rootish_queuing_disabled(
+    def _decide_worker_rootish_queuing_disabled(
         self, ts: TaskState
     ) -> WorkerState | None:
         """Pick a worker for a runnable root-ish task, without queuing.
@@ -2223,7 +2223,7 @@ class SchedulerState:
             ``no-worker``.
         """
         if self.validate:
-            # See root-ish-ness note below in `decide_worker_rootish_queuing_enabled`
+            # See root-ish-ness note below in `_decide_worker_rootish_queuing_enabled`
             assert math.isinf(self.WORKER_SATURATION)
 
         pool = self.idle.values() if self.idle else self.running
@@ -2259,7 +2259,7 @@ class SchedulerState:
 
         return ws
 
-    def decide_worker_rootish_queuing_enabled(self) -> WorkerState | None:
+    def _decide_worker_rootish_queuing_enabled(self) -> WorkerState | None:
         """Pick a worker for a runnable root-ish task, if not all are busy.
 
         Picks the least-busy worker out of the ``idle`` workers (idle workers have fewer
@@ -2284,7 +2284,7 @@ class SchedulerState:
 
         """
         if self.validate:
-            # We don't `assert self.is_rootish(ts)` here, because that check is
+            # We don't `assert self._is_rootish(ts)` here, because that check is
             # dependent on cluster size. It's possible a task looked root-ish when it
             # was queued, but the cluster has since scaled up and it no longer does when
             # coming out of the queue. If `is_rootish` changes to a static definition,
@@ -2311,7 +2311,7 @@ class SchedulerState:
 
         return ws
 
-    def decide_worker_non_rootish(self, ts: TaskState) -> WorkerState | None:
+    def _decide_worker_non_rootish(self, ts: TaskState) -> WorkerState | None:
         """Pick a worker for a runnable non-root task, considering dependencies and
         restrictions.
 
@@ -2336,7 +2336,7 @@ class SchedulerState:
             valid_workers = self.running
 
         if ts.dependencies or valid_workers is not None:
-            ws = decide_worker(
+            ws = _decide_worker(
                 ts,
                 self.running,
                 valid_workers,
@@ -2385,19 +2385,19 @@ class SchedulerState:
         """
         ts = self.tasks[key]
 
-        if self.is_rootish(ts):
+        if self._is_rootish(ts):
             # NOTE: having two root-ish methods is temporary. When the feature flag is
             # removed, there should only be one, which combines co-assignment and
             # queuing. Eventually, special-casing root tasks might be removed entirely,
             # with better heuristics.
             if math.isinf(self.WORKER_SATURATION):
-                if not (ws := self.decide_worker_rootish_queuing_disabled(ts)):
+                if not (ws := self._decide_worker_rootish_queuing_disabled(ts)):
                     return {ts.key: "no-worker"}, {}, {}
             else:
-                if not (ws := self.decide_worker_rootish_queuing_enabled()):
+                if not (ws := self._decide_worker_rootish_queuing_enabled()):
                     return {ts.key: "queued"}, {}, {}
         else:
-            if not (ws := self.decide_worker_non_rootish(ts)):
+            if not (ws := self._decide_worker_non_rootish(ts)):
                 return {ts.key: "no-worker"}, {}, {}
 
         return self._add_to_processing(ts, ws, stimulus_id=stimulus_id)
@@ -2864,7 +2864,7 @@ class SchedulerState:
             assert not ts.actor, f"Actors can't be queued: {ts}"
             assert ts in self.queued
 
-        if ws := self.decide_worker_rootish_queuing_enabled():
+        if ws := self._decide_worker_rootish_queuing_enabled():
             self.queued.discard(ts)
             return self._add_to_processing(ts, ws, stimulus_id=stimulus_id)
         # If no worker, task just stays `queued`
@@ -2989,7 +2989,7 @@ class SchedulerState:
     # Assigning Tasks to Workers #
     ##############################
 
-    def is_rootish(self, ts: TaskState) -> bool:
+    def _is_rootish(self, ts: TaskState) -> bool:
         """
         Whether ``ts`` is a root or root-like task.
 
@@ -8736,7 +8736,7 @@ def _task_to_client_msgs(ts: TaskState) -> Msgs:
     return {}
 
 
-def decide_worker(
+def _decide_worker(
     ts: TaskState,
     all_workers: set[WorkerState],
     valid_workers: set[WorkerState] | None,
@@ -8772,7 +8772,7 @@ def decide_worker(
             candidates = valid_workers
             if not candidates:
                 if ts.loose_restrictions:
-                    return decide_worker(ts, all_workers, None, objective)
+                    return _decide_worker(ts, all_workers, None, objective)
 
     if not candidates:
         return None

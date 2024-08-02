@@ -123,18 +123,18 @@ start running the soonest, using :meth:`Scheduler.worker_objective`. For each wo
     memory, not the :ref:`process <memtypes>` memory.
 
 This process is easy to change (and indeed this document may be outdated).  We
-encourage readers to inspect the ``decide_worker`` and ``worker_objective``
+encourage readers to inspect the ``_decide_worker`` and ``worker_objective``
 functions in ``scheduler.py``.
 
 .. currentmodule:: distributed.scheduler
 
-.. autosummary:: decide_worker
+.. autosummary:: _decide_worker
 
-.. autosummary:: Scheduler.decide_worker_non_rootish
+.. autosummary:: Scheduler._decide_worker_non_rootish
 
-.. autosummary:: Scheduler.decide_worker_rootish_queuing_disabled
+.. autosummary:: Scheduler._decide_worker_rootish_queuing_disabled
 
-.. autosummary:: Scheduler.decide_worker_rootish_queuing_enabled
+.. autosummary:: Scheduler._decide_worker_rootish_queuing_enabled
 
 .. autosummary:: Scheduler.worker_objective
 

@@ -2723,7 +2723,7 @@ async def test_unpack_is_non_rootish(c, s, a, b):
 
     unpack_tss = [ts for key, ts in s.tasks.items() if key_split(key) == UNPACK_PREFIX]
     assert len(unpack_tss) == 20
-    assert not any(s.is_rootish(ts) for ts in unpack_tss)
+    assert not any(s._is_rootish(ts) for ts in unpack_tss)
     del unpack_tss
     scheduler_plugin.block_barrier.set()
     result = await result
