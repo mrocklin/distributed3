@@ -325,9 +325,12 @@ class AsyncProcess:
         assert self._state.pid is not None, "can only join a started process"
         if self._state.exitcode is not None:
             return
-        # Shield otherwise the timeout cancels the future and our
-        # on_exit callback will try to set a result on a canceled future
-        await wait_for(asyncio.shield(self._exit_future), timeout)
+        if timeout:
+            # Shield otherwise the timeout cancels the future and our
+            # on_exit callback will try to set a result on a canceled future
+            await wait_for(asyncio.shield(self._exit_future), timeout)
+        else:
+            await self._exit_future
 
     def close(self):
         """

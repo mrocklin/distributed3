@@ -10,6 +10,7 @@ import weakref
 from collections.abc import Awaitable, Generator
 from contextlib import suppress
 from inspect import isawaitable
+from time import time
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from tornado import gen
@@ -389,28 +390,64 @@ class SpecCluster(Cluster):
                 # proper teardown.
                 await asyncio.gather(*worker_futs)
 
-    def _update_worker_status(self, op, msg):
+    def _update_worker_status(self, op, worker_addr):
         if op == "remove":
-            name = self.scheduler_info["workers"][msg]["name"]
+            worker_info = self.scheduler_info["workers"][worker_addr].copy()
+            name = worker_info["name"]
+
+            from distributed import Nanny, Worker
 
             def f():
+                # FIXME: SpecCluster is tracking workers by `name`` which are
+                # not necessarily unique.
+                # Clusters with Nannies (default) are susceptible to falsely
+                # removing the Nannies on restart due to this logic since the
+                # restart emits a op==remove signal on the worker address but
+                # the SpecCluster only tracks the names, i.e. after
+                # `lost-worker-timeout` the Nanny is still around and this logic
+                # could trigger a false close. The below code should handle this
+                # but it would be cleaner if the cluster tracked by address
+                # instead of name just like the scheduler does
                 if (
                     name in self.workers
-                    and msg not in self.scheduler_info["workers"]
+                    and worker_addr not in self.scheduler_info["workers"]
                     and not any(
                         d["name"] == name
                         for d in self.scheduler_info["workers"].values()
                     )
                 ):
-                    self._futures.add(asyncio.ensure_future(self.workers[name].close()))
-                    del self.workers[name]
+                    w = self.workers[name]
+
+                    async def remove_worker():
+                        await w.close(reason=f"lost-worker-timeout-{time()}")
+                        self.workers.pop(name, None)
+
+                    if (
+                        worker_info["type"] == "Worker"
+                        and (isinstance(w, Nanny) and w.worker_address == worker_addr)
+                        or (isinstance(w, Worker) and w.address == worker_addr)
+                    ):
+                        self._futures.add(
+                            asyncio.create_task(
+                                remove_worker(),
+                                name="remove-worker-lost-worker-timeout",
+                            )
+                        )
+                    elif worker_info["type"] == "Nanny":
+                        # This should never happen
+                        logger.critical(
+                            "Unespected signal encountered. WorkerStatusPlugin "
+                            "emitted a op==remove signal for a Nanny which "
+                            "should not happen. This might cause a lingering "
+                            "Nanny process."
+                        )
 
             delay = parse_timedelta(
                 dask.config.get("distributed.deploy.lost-worker-timeout")
             )
 
             asyncio.get_running_loop().call_later(delay, f)
-        super()._update_worker_status(op, msg)
+        super()._update_worker_status(op, worker_addr)
 
     def __await__(self: Self) -> Generator[Any, Any, Self]:
         async def _() -> Self:

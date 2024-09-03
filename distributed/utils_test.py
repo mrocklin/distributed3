@@ -2352,22 +2352,10 @@ class BlockedInstantiateNanny(Nanny):
         self.in_instantiate = asyncio.Event()
         self.wait_instantiate = asyncio.Event()
 
-    async def instantiate(self):
+    async def start_worker_process(self):
         self.in_instantiate.set()
         await self.wait_instantiate.wait()
-        return await super().instantiate()
-
-
-class BlockedKillNanny(Nanny):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.in_kill = asyncio.Event()
-        self.wait_kill = asyncio.Event()
-
-    async def kill(self, **kwargs):
-        self.in_kill.set()
-        await self.wait_kill.wait()
-        return await super().kill(**kwargs)
+        return await super().start_worker_process()
 
 
 async def wait_for_state(

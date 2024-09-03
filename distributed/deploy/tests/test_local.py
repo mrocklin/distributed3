@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import pytest
 from tornado.httpclient import AsyncHTTPClient
 
+import dask
 from dask.system import CPU_COUNT
 
 from distributed import Client, LocalCluster, Nanny, Worker, get_client
@@ -1297,3 +1298,17 @@ def test_localcluster_get_client(loop):
             with Client(cluster) as client2:
                 assert client1 != client2
                 assert client2 == cluster.get_client()
+
+
+@pytest.mark.slow()
+def test_localcluster_restart(loop):
+    with (
+        dask.config.set({"distributed.deploy.lost-worker-timeout": "0.5s"}),
+        LocalCluster(asynchronous=False, dashboard_address=":0", loop=loop) as cluster,
+        cluster.get_client() as client,
+    ):
+        nworkers = len(client.run(lambda: None))
+        for _ in range(10):
+            assert len(client.run(lambda: None)) == nworkers
+            client.restart()
+            assert len(client.run(lambda: None)) == nworkers

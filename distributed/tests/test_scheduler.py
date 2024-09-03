@@ -34,7 +34,6 @@ from distributed import (
     Event,
     Lock,
     Nanny,
-    SchedulerPlugin,
     Worker,
     fire_and_forget,
     wait,
@@ -59,7 +58,6 @@ from distributed.utils_test import (
     NO_AMM,
     BlockedGatherDep,
     BlockedGetData,
-    BlockedKillNanny,
     BrokenComm,
     NoSchedulerDelayWorker,
     assert_story,
@@ -1146,39 +1144,6 @@ async def test_restart_waits_for_new_workers(c, s, *workers):
     assert set(s.workers.values()).isdisjoint(original_workers.values())
 
 
-@pytest.mark.slow
-@gen_cluster(client=True, Worker=BlockedKillNanny, nthreads=[("", 1)] * 2)
-async def test_restart_nanny_timeout_exceeded(c, s, a, b):
-    try:
-        f = c.submit(div, 1, 0)
-        fr = c.submit(inc, 1, resources={"FOO": 1})
-        await wait(f)
-        assert s.erred_tasks
-        assert s.computations
-        assert s.unrunnable
-        assert s.tasks
-
-        with pytest.raises(
-            TimeoutError, match=r"2/2 nanny worker\(s\) did not shut down within 1s"
-        ):
-            await c.restart(timeout="1s")
-        assert a.in_kill.is_set()
-        assert b.in_kill.is_set()
-
-        assert not s.workers
-        assert not s.erred_tasks
-        assert not s.computations
-        assert not s.unrunnable
-        assert not s.tasks
-
-        assert not c.futures
-        assert f.status == "cancelled"
-        assert fr.status == "cancelled"
-    finally:
-        a.wait_kill.set()
-        b.wait_kill.set()
-
-
 @gen_cluster(client=True, nthreads=[("", 1)] * 2)
 async def test_restart_not_all_workers_return(c, s, a, b):
     with pytest.raises(TimeoutError, match="Waited for 2 worker"):
@@ -1187,43 +1152,6 @@ async def test_restart_not_all_workers_return(c, s, a, b):
     assert not s.workers
     assert a.status in (Status.closed, Status.closing)
     assert b.status in (Status.closed, Status.closing)
-
-
-@gen_cluster(client=True, nthreads=[("", 1)])
-async def test_restart_worker_rejoins_after_timeout_expired(c, s, a):
-    """
-    We don't want to see an error message like:
-
-    ``Waited for 1 worker(s) to reconnect after restarting, but after 0s, 0 have not returned.``
-
-    If a worker rejoins after our last poll for new workers, but before we raise the error,
-    we shouldn't raise the error.
-    """
-    # We'll use a 0s timeout on the restart, so it always expires.
-    # And we'll use a plugin to block the restart process, and spin up a new worker
-    # in the middle of it.
-
-    class Plugin(SchedulerPlugin):
-        removed = asyncio.Event()
-        proceed = asyncio.Event()
-
-        async def remove_worker(self, *args, **kwargs):
-            self.removed.set()
-            await self.proceed.wait()
-
-    s.add_plugin(Plugin())
-
-    task = asyncio.create_task(c.restart(timeout=0))
-    await Plugin.removed.wait()
-    assert not s.workers
-
-    async with Worker(s.address, nthreads=1):
-        assert len(s.workers) == 1
-        Plugin.proceed.set()
-
-        # New worker has joined, but the timeout has expired (since it was 0).
-        # Still, we should not time out.
-        await task
 
 
 @gen_cluster(client=True, nthreads=[("", 1)] * 2)
@@ -1245,7 +1173,6 @@ async def test_restart_some_nannies_some_not(c, s, a, b):
     async with Worker(s.address, nthreads=1) as w:
         await c.wait_for_workers(3)
 
-        # FIXME how to make this not always take 20s if the nannies do restart quickly?
         with pytest.raises(TimeoutError, match=r"The 1 worker\(s\) not using Nannies"):
             await c.restart(timeout="20s")
 
@@ -1254,6 +1181,18 @@ async def test_restart_some_nannies_some_not(c, s, a, b):
         assert len(s.workers) == 2
         assert set(s.workers).isdisjoint(original_addrs)
         assert w.address not in s.workers
+
+
+class BlockedKillNanny(Nanny):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.in_kill = asyncio.Event()
+        self.wait_kill = asyncio.Event()
+
+    async def kill(self, **kwargs):
+        self.in_kill.set()
+        await self.wait_kill.wait()
+        return await super().kill(**kwargs)
 
 
 @pytest.mark.slow

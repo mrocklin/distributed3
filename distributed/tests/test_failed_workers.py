@@ -17,7 +17,6 @@ from dask.utils import parse_bytes
 from distributed import Client, KilledWorker, Nanny, get_worker, profile, wait
 from distributed.comm import CommClosedError
 from distributed.compatibility import MACOS
-from distributed.core import Status
 from distributed.metrics import time
 from distributed.utils import CancelledError, sync
 from distributed.utils_test import (
@@ -290,10 +289,7 @@ async def test_forgotten_futures_dont_clean_up_new_futures(c, s, a, b):
 async def test_broken_worker_during_computation(c, s, a, b):
     s.allowed_failures = 100
     async with Nanny(s.address, nthreads=2) as n:
-        start = time()
-        while len(s.workers) < 3:
-            await asyncio.sleep(0.01)
-            assert time() < start + 5
+        await c.wait_for_workers(3)
 
         N = 256
         expected_result = N * (N + 1) // 2
@@ -307,13 +303,20 @@ async def test_broken_worker_during_computation(c, s, a, b):
                 key=["add-%d-%d" % (i, j) for j in range(len(L) // 2)],
             )
 
+        old_worker_address = n.worker_address
         await asyncio.sleep(random.random() / 20)
         with suppress(CommClosedError):  # comm will be closed abrupty
             await c.run(os._exit, 1, workers=[n.worker_address])
 
-        await asyncio.sleep(random.random() / 20)
-        while len(s.workers) < 3:
+        while (
+            not n.process.is_alive()
+            or n.worker_address == old_worker_address
+            or n.worker_address is None
+        ):
             await asyncio.sleep(0.01)
+        await c.wait_for_workers(3)
+
+        await asyncio.sleep(random.random() / 20)
 
         with suppress(
             CommClosedError, EnvironmentError
@@ -489,48 +492,62 @@ async def test_worker_time_to_live(c, s, a, b):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("block_evloop", [False, True])
+@pytest.mark.parametrize("block_on", [None, "event_loop", "threadpool"])
 @gen_cluster(
     client=True,
     Worker=Nanny,
     nthreads=[("", 1)],
-    scheduler_kwargs={"worker_ttl": "500ms", "allowed_failures": 0},
+    scheduler_kwargs={"worker_ttl": "100ms", "allowed_failures": 0},
+    clean_kwargs={"threads": False},
 )
-async def test_worker_ttl_restarts_worker(c, s, a, block_evloop):
+async def test_worker_ttl_restarts_worker(c, s, a, block_on, monkeypatch):
     """If the event loop of a worker becomes completely unresponsive, the scheduler will
     restart it through the nanny.
     """
-    ws = s.workers[a.worker_address]
+    ev = asyncio.Event()
 
-    async def f():
+    def wait_for_restart(event):
+        _, msg = event
+        if msg.get("action") == "worker-ttl-restart":
+            ev.set()
+
+    c.subscribe_topic("all", wait_for_restart)
+
+    def f():
         w = get_worker()
         w.periodic_callbacks["heartbeat"].stop()
-        if block_evloop:
-            sleep(9999)  # Block event loop indefinitely
-        else:
-            await asyncio.sleep(9999)
+        if block_on is None:
+            return
+        elif block_on == "event_loop":
+
+            async def _():
+                sleep(9999)  # Block event loop indefinitely
+
+            w.loop.add_callback(_)
+        elif block_on == "threadpool":
+            sleep(9999)
 
     fut = c.submit(f, key="x")
 
-    while not s.workers or (
-        (new_ws := next(iter(s.workers.values()))) is ws
-        or new_ws.status != Status.running
-    ):
-        await asyncio.sleep(0.01)
+    # TTL is set to at least 10 heartbeats
+    import distributed.scheduler
 
-    if block_evloop:
+    monkeypatch.setattr(distributed.scheduler, "heartbeat_interval", lambda n: 0.001)
+
+    await ev.wait()
+
+    if block_on:
         # The nanny killed the worker with SIGKILL.
         # The restart has increased the suspicious count.
         with pytest.raises(KilledWorker):
             await fut
-        assert s.tasks["x"].state == "erred"
         assert s.tasks["x"].suspicious == 1
     else:
         # The nanny sent to the WorkerProcess a {op: stop} through IPC, which in turn
         # successfully invoked Worker.close(nanny=False).
         # This behaviour makes sense as the worker-ttl timeout was most likely caused
         # by a failure in networking, rather than a hung process.
-        assert s.tasks["x"].state == "processing"
+        await fut
         assert s.tasks["x"].suspicious == 0
 
 

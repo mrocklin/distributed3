@@ -419,7 +419,11 @@ def main(  # type: ignore[no-untyped-def]
 
         async def wait_for_nannies_to_finish():
             """Wait for all nannies to initialize and finish"""
-            await asyncio.gather(*nannies)
+            try:
+                await asyncio.gather(*nannies)
+            except Exception:
+                if not signal_fired:
+                    raise
             await asyncio.gather(*(n.finished() for n in nannies))
 
         async def wait_for_signals_and_close():

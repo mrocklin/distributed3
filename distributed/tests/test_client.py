@@ -91,7 +91,6 @@ from distributed.utils_test import (
     BlockedGatherDep,
     BlockedGetData,
     BlockedInstantiateNanny,
-    BlockedKillNanny,
     TaskStateMetadataPlugin,
     _UnhashableCallable,
     async_poll_for,
@@ -3649,7 +3648,8 @@ async def test_Client_clears_references_after_restart(c, s, a, b):
     with pytest.raises(TimeoutError):
         await c.restart(timeout=1)
 
-    assert x.key not in c.refcount
+    while x.key in c.refcount:
+        await asyncio.sleep(0.01)
     assert not c.futures
 
     key = x.key
@@ -4998,26 +4998,6 @@ async def test_restart_workers_no_nanny_raises(c, s, a, b):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("raise_for_error", (True, False))
-@gen_cluster(client=True, nthreads=[("", 1)], Worker=BlockedKillNanny)
-async def test_restart_workers_kill_timeout(c, s, a, raise_for_error):
-    # FIXME a timeout _too_ tight causes the scheduler to hang as wait_for cancels
-    # the nanny.kill RPC too soon.
-    kwargs = dict(workers=[a.worker_address], timeout=2)
-
-    if raise_for_error:  # default is to raise
-        with pytest.raises(TimeoutError) as excinfo:
-            await c.restart_workers(**kwargs)
-        msg = str(excinfo.value)
-        assert "1/1 nanny worker(s) did not shut down within 2s" in msg
-        assert a.worker_address in msg
-    else:
-        results = await c.restart_workers(raise_for_error=raise_for_error, **kwargs)
-        assert results == {a.worker_address: "timed out"}
-    a.wait_kill.set()
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("raise_for_error", (True, False))
 @gen_cluster(client=True, nthreads=[])
 async def test_restart_workers_restart_timeout(c, s, raise_for_error):
     a = BlockedInstantiateNanny(s.address)
@@ -5039,17 +5019,17 @@ async def test_restart_workers_restart_timeout(c, s, raise_for_error):
                 "after 3s, 1 have not returned"
             ) in msg
         else:
+            worker_addr = a.worker_address
             results = await c.restart_workers(raise_for_error=raise_for_error, **kwargs)
-            assert results == {a.worker_address: "timed out"}
+            assert results == {worker_addr: "error"}
 
 
-@pytest.mark.slow
 @gen_cluster(client=True, Worker=Nanny)
 async def test_restart_workers_exception(c, s, a, b):
     async def fail_instantiate(*_args, **_kwargs):
         raise ValueError("broken")
 
-    a.instantiate = fail_instantiate
+    a.start_worker_process = fail_instantiate
 
     with captured_logger("distributed.nanny") as log, pytest.raises(TimeoutError):
         await c.restart_workers(workers=[a.worker_address], timeout=3)

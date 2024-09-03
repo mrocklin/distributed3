@@ -1223,8 +1223,8 @@ class Worker(BaseWorker, ServerNode):
             raise ValueError(f"Unexpected response from register: {response!r}")
 
         self.batched_stream.start(comm)
-        self.status = Status.running
 
+        self.status = Status.running
         await asyncio.gather(
             *(
                 self.plugin_add(name=name, plugin=plugin)
@@ -1552,7 +1552,6 @@ class Worker(BaseWorker, ServerNode):
         # This also informs the scheduler about the status update
         self.status = Status.closing
         setproctitle("dask worker [closing]")
-
         if nanny and self.nanny:
             with self.rpc(self.nanny) as r:
                 await r.close_gracefully(reason=reason)
@@ -1689,7 +1688,7 @@ class Worker(BaseWorker, ServerNode):
     async def wait_until_closed(self):
         warnings.warn("wait_until_closed has moved to finished()")
         await self.finished()
-        assert self.status == Status.closed
+        assert self.status == Status.closed, self.status
 
     ################
     # Worker Peers #
@@ -2641,7 +2640,7 @@ class Worker(BaseWorker, ServerNode):
         return self.active_threads[threading.get_ident()]
 
     def _handle_remove_worker(self, worker: str, stimulus_id: str) -> None:
-        self.rpc.remove(worker)
+        self.rpc.remove(worker, reason=stimulus_id)
         self.handle_stimulus(RemoveWorkerEvent(worker=worker, stimulus_id=stimulus_id))
 
     def validate_state(self) -> None:

@@ -163,7 +163,6 @@ class Nanny(ServerNode):
             )
 
         self.__exit_stack = stack = contextlib.ExitStack()
-        self.process = None
         self._setup_logging(logger)
         self.loop = self.io_loop = IOLoop.current()
 
@@ -186,7 +185,6 @@ class Nanny(ServerNode):
             preload_nanny_argv = dask.config.get("distributed.nanny.preload-argv")
 
         handlers = {
-            "instantiate": self.instantiate,
             "kill": self.kill,
             "restart": self.restart,
             "get_logs": self.get_logs,
@@ -282,7 +280,11 @@ class Nanny(ServerNode):
         self._start_host = host
         self._interface = interface
         self._protocol = protocol
-
+        self._lifecycle_lock = asyncio.Lock()
+        self._proc_changed = asyncio.Event()
+        self.process = None
+        self._reconciler_task = None
+        self._reconciler_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._listen_address = listen_address
         Nanny._instances.add(self)
 
@@ -294,30 +296,25 @@ class Nanny(ServerNode):
     def __repr__(self):
         return "<Nanny: %s, threads: %d>" % (self.worker_address, self.nthreads)
 
-    async def _unregister(self, timeout=10):
-        if self.process is None:
-            return
-        worker_address = self.process.worker_address
+    async def _unregister(self, proc):
+        worker_address = proc.worker_address
         if worker_address is None:
             return
 
         try:
-            await wait_for(
-                self.scheduler.unregister(
-                    address=self.worker_address, stimulus_id=f"nanny-close-{time()}"
-                ),
-                timeout,
+            await self.scheduler.unregister(
+                address=worker_address, stimulus_id=f"nanny-close-{time()}"
             )
         except (asyncio.TimeoutError, CommClosedError, OSError, RPCClosed):
             pass
 
     @property
     def worker_address(self):
-        return None if self.process is None else self.process.worker_address
+        return None if not self.process.is_alive() else self.process.worker_address
 
     @property
     def worker_dir(self):
-        return None if self.process is None else self.process.worker_dir
+        return None if not self.process.is_alive() else self.process.worker_dir
 
     async def start_unsafe(self):
         """Start nanny, start local process, start watching"""
@@ -362,14 +359,16 @@ class Nanny(ServerNode):
             await comm.write({"op": "register_nanny", "address": self.address})
             msg = await comm.read()
             try:
+                logger.info("        Start Nanny at: %r", self.address)
+                self.process = self.instantiate_worker_process()
+                async with self.successful_instantiation():
+                    self._reconciler_task = asyncio.create_task(
+                        self._reconciler(), name="WorkerProcess reconciler"
+                    )
+
+                assert self.worker_address, self.worker_address
                 for name, plugin in msg["nanny-plugins"].items():
                     await self.plugin_add(plugin=plugin, name=name)
-
-                logger.info("        Start Nanny at: %r", self.address)
-                response = await self.instantiate()
-
-                if response != Status.running:
-                    raise RuntimeError("Nanny failed to start worker process")
             except Exception:
                 try:
                     await comm.write({"status": "error"})
@@ -384,8 +383,6 @@ class Nanny(ServerNode):
         finally:
             await comm.close()
 
-        assert self.worker_address
-
         self.start_periodic_callbacks()
 
         return self
@@ -399,62 +396,50 @@ class Nanny(ServerNode):
         if self.process is not None:
             await self.process.kill(reason=reason, timeout=timeout)
 
-    async def instantiate(self) -> Status:
+    def instantiate_worker_process(self) -> WorkerProcess:
+        worker_kwargs = dict(
+            scheduler_ip=self.scheduler_addr,
+            nthreads=self.nthreads,
+            local_directory=self._original_local_dir,
+            services=self.services,
+            nanny=self.address,
+            name=self.name,
+            memory_limit=self.memory_manager.memory_limit,
+            resources=self.resources,
+            validate=self.validate,
+            silence_logs=self.silence_logs,
+            death_timeout=self.death_timeout,
+            preload=self.preload,
+            preload_argv=self.preload_argv,
+            security=self.security,
+            contact_address=self.contact_address,
+        )
+        worker_kwargs.update(self.worker_kwargs)
+
+        return WorkerProcess(
+            worker_kwargs=worker_kwargs,
+            silence_logs=self.silence_logs,
+            on_exit=self._on_worker_exit_sync,
+            worker=self.Worker,
+            env=self.env,
+            pre_spawn_env=self.pre_spawn_env,
+            config=self.config,
+        )
+
+    async def start_worker_process(self) -> dict[str, Status]:
         """Start a local worker process
 
         Blocks until the process is up and the scheduler is properly informed
         """
-        if self.process is None:
-            worker_kwargs = dict(
-                scheduler_ip=self.scheduler_addr,
-                nthreads=self.nthreads,
-                local_directory=self._original_local_dir,
-                services=self.services,
-                nanny=self.address,
-                name=self.name,
-                memory_limit=self.memory_manager.memory_limit,
-                resources=self.resources,
-                validate=self.validate,
-                silence_logs=self.silence_logs,
-                death_timeout=self.death_timeout,
-                preload=self.preload,
-                preload_argv=self.preload_argv,
-                security=self.security,
-                contact_address=self.contact_address,
-            )
-            worker_kwargs.update(self.worker_kwargs)
-            self.process = WorkerProcess(
-                worker_kwargs=worker_kwargs,
-                silence_logs=self.silence_logs,
-                on_exit=self._on_worker_exit_sync,
-                worker=self.Worker,
-                env=self.env,
-                pre_spawn_env=self.pre_spawn_env,
-                config=self.config,
-            )
-
-        if self.death_timeout:
-            try:
-                result = await wait_for(self.process.start(), self.death_timeout)
-            except asyncio.TimeoutError:
-                logger.error(
-                    "Timed out connecting Nanny '%s' to scheduler '%s'",
-                    self,
-                    self.scheduler_addr,
-                )
-                await self.close(
-                    timeout=self.death_timeout, reason="nanny-instantiate-timeout"
-                )
-                raise
-
-        else:
-            try:
-                result = await self.process.start()
-            except Exception:
-                logger.error("Failed to start process", exc_info=True)
-                await self.close(reason="nanny-instantiate-failed")
-                raise
-        return result
+        assert self.process is not None
+        try:
+            result = await wait_for(self.process.start(), self.death_timeout)
+        except asyncio.TimeoutError:
+            raise
+        except Exception:
+            logger.error("Failed to start process", exc_info=True)
+            raise
+        return {"status": result}
 
     @log_errors
     async def plugin_add(
@@ -507,28 +492,36 @@ class Nanny(ServerNode):
 
         return {"status": "OK"}
 
+    @contextlib.asynccontextmanager
+    async def successful_instantiation(self):
+        async with self._lifecycle_lock:
+            while not self._reconciler_queue.empty():
+                self._reconciler_queue.get_nowait()
+            self._proc_changed.set()
+            try:
+                yield
+            finally:
+                response = await self._reconciler_queue.get()
+                if response["status"] != Status.running:
+                    if "exception" in response:
+                        raise response["exception"]
+                    else:
+                        raise RuntimeError("Worker failed to start")
+
     async def restart(
         self, timeout: float = 30, reason: str = "nanny-restart"
-    ) -> Literal["OK", "timed out"] | ErrorMessage:
-        async def _():
-            if self.process is not None:
-                await self.kill(reason=reason)
-                await self.instantiate()
-
+    ) -> ErrorMessage | OKMessage:
         try:
-            await wait_for(_(), timeout)
-        except asyncio.TimeoutError:
-            logger.error(
-                f"Restart timed out after {timeout}s; returning before finished"
-            )
-            return "timed out"
+            async with self.successful_instantiation():
+                await self.kill(reason=reason, timeout=timeout)
         except Exception as e:
+            logger.exception("Failed to kill worker", exc_info=True)
             return error_message(e)
         else:
-            return "OK"
+            return {"status": "OK"}
 
     def is_alive(self):
-        return self.process is not None and self.process.is_alive()
+        return self.process.is_alive()
 
     def run(self, comm, *args, **kwargs):
         return run(self, comm, *args, **kwargs)
@@ -541,43 +534,45 @@ class Nanny(ServerNode):
         ):  # Async task group has already been closed, so the nanny is already clos(ed|ing).
             pass
 
+    async def _reconciler(self):
+        while self.status in (Status.init, Status.running):
+            if not self.process.is_alive():
+                if self.status == Status.running:
+                    logger.warning("Restarting Worker on Nanny %s", self.address)
+                try:
+                    result = await self.start_worker_process()
+                except Exception as e:
+                    logger.exception("Failed to start worker", exc_info=True)
+                    self.status = Status.failed
+                    result = {"status": Status.failed, "exception": e}
+                self._reconciler_queue.put_nowait(result)
+            self._proc_changed.clear()
+            await self._proc_changed.wait()
+        await self.close(reason="nanny-close-gracefully")
+
     @log_errors
     async def _on_worker_exit(self, exitcode):
-        if self.status not in (
-            Status.init,
-            Status.closing,
-            Status.closed,
-            Status.closing_gracefully,
-            Status.failed,
-        ):
-            try:
-                await self._unregister()
-            except OSError:
-                logger.exception("Failed to unregister")
-                if not self.reconnect:
-                    await self.close(reason="nanny-unregister-failed")
-                    return
-
+        # NOTE: This coroutine method should only be scheduled as an isolated
+        # task but not called directly since it is catching an
+        # asyncio.CancelledError.
+        old_proc = self.process
+        self.process = self.instantiate_worker_process()
         try:
-            if self.status not in (
-                Status.closing,
-                Status.closed,
-                Status.closing_gracefully,
-                Status.failed,
-            ):
-                logger.warning("Restarting worker")
-                await self.instantiate()
-            elif self.status == Status.closing_gracefully:
-                await self.close(reason="nanny-close-gracefully")
-
-        except Exception:
-            logger.error(
-                "Failed to restart worker after its process exited", exc_info=True
-            )
+            if self.status in (Status.starting, Status.running):
+                await self._unregister(old_proc)
+        except OSError:
+            logger.exception("Failed to unregister")
+        except asyncio.CancelledError:
+            # Can happen during teardown.
+            pass
+        finally:
+            # NOTE: This causes the new worker to only be started once the old
+            # one is unregistered
+            self._proc_changed.set()
 
     @property
     def pid(self):
-        return self.process and self.process.pid
+        return self.process.pid
 
     def _close(self, *args, **kwargs):
         warnings.warn("Worker._close has moved to Worker.close", stacklevel=2)
@@ -602,7 +597,8 @@ class Nanny(ServerNode):
         """
         if self.status == Status.closing:
             await self.finished()
-            assert self.status == Status.closed
+            assert self.status in (Status.closed, Status.failed), self.status
+            return "OK"
 
         if self.status == Status.closed:
             return "OK"
@@ -615,12 +611,12 @@ class Nanny(ServerNode):
         await asyncio.gather(*(self.plugin_remove(name) for name in self.plugins))
 
         self.stop()
-        if self.process is not None:
+        if self.process is not None and self.process.is_alive():
             await self.kill(timeout=timeout, reason=reason)
 
-        self.process = None
         await self.rpc.close()
         self.status = Status.closed
+
         await super().close()
         self.__exit_stack.__exit__(None, None, None)
         return "OK"
@@ -694,6 +690,9 @@ class WorkerProcess:
         except ValueError:
             pass
 
+        self.process_up = asyncio.Event()
+        self.running = asyncio.Event()
+        self.stopped = asyncio.Event()
         # Initialized when worker is ready
         self.worker_dir = None
         self.worker_address = None
@@ -736,35 +735,36 @@ class WorkerProcess:
         )
         self.process.daemon = dask.config.get("distributed.worker.daemon", default=True)
         self.process.set_exit_callback(self._on_exit)
-        self.running = asyncio.Event()
-        self.stopped = asyncio.Event()
         self.status = Status.starting
 
         # Set selected environment variables before spawning the subprocess.
         # See note in Nanny docstring.
         os.environ.update(self.pre_spawn_env)
-
         try:
-            await self.process.start()
-        except OSError:
-            logger.exception("Nanny failed to start process", exc_info=True)
-            # NOTE: doesn't wait for process to terminate, just for terminate signal to be sent
-            await self.process.terminate()
-            self.status = Status.failed
-        try:
-            msg = await self._wait_until_connected(uid)
-        except Exception:
-            # NOTE: doesn't wait for process to terminate, just for terminate signal to be sent
-            await self.process.terminate()
-            self.status = Status.failed
-            raise
-        if not msg:
-            return self.status
-        self.worker_address = msg["address"]
-        self.worker_dir = msg["dir"]
-        assert self.worker_address
-        self.status = Status.running
-        self.running.set()
+            try:
+                await self.process.start()
+            except OSError:
+                logger.exception("Nanny failed to start process", exc_info=True)
+                # NOTE: doesn't wait for process to terminate, just for terminate signal to be sent
+                await self.process.terminate()
+                self.status = Status.failed
+            finally:
+                self.process_up.set()
+            try:
+                msg = await self._wait_until_connected(uid)
+            except Exception:
+                # NOTE: doesn't wait for process to terminate, just for terminate signal to be sent
+                await self.process.terminate()
+                self.status = Status.failed
+                raise
+            if not msg:
+                return self.status
+            self.worker_address = msg["address"]
+            self.worker_dir = msg["dir"]
+            assert self.worker_address
+            self.status = Status.running
+        finally:
+            self.running.set()
 
         return self.status
 
@@ -821,28 +821,28 @@ class WorkerProcess:
     ) -> None:
         """
         Ensure the worker process is stopped, waiting at most
-        ``timeout * 0.8`` seconds before killing it abruptly.
+        ``timeout`` seconds before killing it abruptly.
 
         When `kill` returns, the worker process has been joined.
 
         If the worker process does not terminate within ``timeout`` seconds,
         even after being killed, `asyncio.TimeoutError` is raised.
         """
-        deadline = time() + timeout
+        # If the process is not properly up it will not watch the closing queue
+        # and we may end up leaking this process
+        # Therefore wait for it to be properly started before killing it
+        if self.status == Status.starting:
+            await self.process_up.wait()
 
         if self.status == Status.stopped:
             return
         if self.status == Status.stopping:
             await self.stopped.wait()
             return
-        # If the process is not properly up it will not watch the closing queue
-        # and we may end up leaking this process
-        # Therefore wait for it to be properly started before killing it
-        if self.status == Status.starting:
-            await self.running.wait()
 
         assert self.status in (
             Status.running,
+            Status.starting,
             Status.failed,  # process failed to start, but hasn't been joined yet
             Status.closing_gracefully,
         ), self.status
@@ -850,11 +850,10 @@ class WorkerProcess:
         logger.info("Nanny asking worker to close. Reason: %s", reason)
 
         process = self.process
-        wait_timeout = timeout * 0.8
         self.child_stop_q.put(
             {
                 "op": "stop",
-                "timeout": wait_timeout,
+                "timeout": timeout,
                 "executor_wait": executor_wait,
                 "reason": reason,
             }
@@ -862,21 +861,13 @@ class WorkerProcess:
         self.child_stop_q.close()
         assert process is not None
         try:
-            try:
-                await process.join(wait_timeout)
-                return
-            except asyncio.TimeoutError:
-                pass
-
+            await process.join(timeout)
+        except asyncio.TimeoutError:
             logger.warning(
-                f"Worker process still alive after {wait_timeout:.1f} seconds, killing"
+                f"Worker process still alive after {timeout:.1f} seconds, killing"
             )
             await process.kill()
-            await process.join(max(0, deadline - time()))
-        except ValueError as e:
-            if "invalid operation on closed AsyncProcess" in str(e):
-                return
-            raise
+            await process.join()
 
     async def _wait_until_connected(self, uid):
         while True:
@@ -958,7 +949,12 @@ class WorkerProcess:
                 )
                 thread.start()
                 stack.callback(thread.join, timeout=2)
-                async with worker:
+                try:
+                    await worker
+                except Exception:
+                    await worker.close(nanny=False)
+                    raise
+                else:
                     failure_type = None
 
                     try:
