@@ -368,9 +368,9 @@ def split_by_partition(
     Split data into many arrow batches, partitioned by final partition
     """
     import numpy as np
+    import pyarrow as pa
 
-    partitions = t.select([column]).to_pandas()[column].unique()
-    partitions.sort()
+    partitions = np.array(pa.compute.unique(t[column]).sort())
     t = t.sort_by(column)
 
     partition = np.asarray(t[column])

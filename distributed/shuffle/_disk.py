@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import pathlib
 import shutil
 import threading
@@ -8,6 +9,7 @@ from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from typing import Any
 
+from packaging.version import parse as parse_version
 from toolz import concat
 
 from distributed.metrics import context_meter, thread_time
@@ -16,6 +18,19 @@ from distributed.shuffle._exceptions import DataUnavailable
 from distributed.shuffle._limiter import ResourceLimiter
 from distributed.shuffle._pickle import pickle_bytelist
 from distributed.utils import Deadline, empty_context, log_errors, nbytes
+
+
+def open_file(*args: Any, **kwargs: Any) -> io.IOBase:
+    open_file = open
+    try:
+        import pyarrow as pa
+
+        if parse_version(pa.__version__) >= parse_version("15.0.0"):
+            # Only >15 support append mode
+            open_file = pa.OSFile
+    except ModuleNotFoundError:
+        pass
+    return open_file(*args, **kwargs)
 
 
 class ReadWriteLock:
@@ -177,7 +192,7 @@ class DiskShardsBuffer(ShardsBuffer):
             if self._closed:
                 raise RuntimeError("Already closed")
 
-            with open(self.directory / str(id), mode="ab") as f:
+            with open_file(str(self.directory / str(id)), mode="ab") as f:
                 f.writelines(frames)
 
         context_meter.digest_metric("disk-write", 1, "count")
