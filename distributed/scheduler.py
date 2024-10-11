@@ -1764,11 +1764,8 @@ class SchedulerState:
         self.clients["fire-and-forget"] = ClientState("fire-and-forget")
         self.extensions = {}
         self.host_info = host_info
-        self.idle = SortedDict()
-        self.idle_task_count = set()
         self.n_tasks = 0
         self.resources = resources
-        self.saturated = set()
         self.tasks = tasks
         self.replicated_tasks = {
             ts for ts in self.tasks.values() if len(ts.who_has or ()) > 1
@@ -1852,7 +1849,6 @@ class SchedulerState:
         return {
             "bandwidth": self.bandwidth,
             "resources": self.resources,
-            "saturated": self.saturated,
             "unrunnable": self.unrunnable,
             "queued": self.queued,
             "n_tasks": self.n_tasks,
@@ -1867,7 +1863,6 @@ class SchedulerState:
             "extensions": self.extensions,
             "clients": self.clients,
             "workers": self.workers,
-            "idle": self.idle,
             "host_info": self.host_info,
         }
 
@@ -2282,7 +2277,7 @@ class SchedulerState:
             # See root-ish-ness note below in `decide_worker_rootish_queuing_enabled`
             assert math.isinf(self.WORKER_SATURATION) or not ts._queueable
 
-        pool = self.idle.values() if self.idle else self.running
+        pool = self.running
         if not pool:
             return None
 
@@ -2347,22 +2342,16 @@ class SchedulerState:
             # then add that assertion here (and actually pass in the task).
             assert not math.isinf(self.WORKER_SATURATION)
 
-        if not self.idle_task_count:
-            # All workers busy? Task gets/stays queued.
+        if not self.running:
             return None
 
         # Just pick the least busy worker.
         # NOTE: this will lead to worst-case scheduling with regards to co-assignment.
-        ws = min(
-            self.idle_task_count,
-            key=lambda ws: len(ws.processing) / ws.nthreads,
-        )
+        ws = min(self.running, key=lambda ws: len(ws.processing) / ws.nthreads)
+        if _worker_full(ws, self.WORKER_SATURATION):
+            return None
         if self.validate:
             assert self.workers.get(ws.address) is ws
-            assert not _worker_full(ws, self.WORKER_SATURATION), (
-                ws,
-                _task_slots_available(ws, self.WORKER_SATURATION),
-            )
             assert ws in self.running, (ws, self.running)
 
         return ws
@@ -2406,7 +2395,7 @@ class SchedulerState:
             # dependencies, but its group is also smaller than the cluster.
 
             # Fastpath when there are no related tasks or restrictions
-            worker_pool = self.idle or self.workers
+            worker_pool = self.workers
             # FIXME idle and workers are SortedDict's declared as dicts
             #       because sortedcontainers is not annotated
             wp_vals = cast("Sequence[WorkerState]", worker_pool.values())
@@ -2906,7 +2895,6 @@ class SchedulerState:
         ts = self.tasks[key]
 
         if self.validate:
-            assert not self.idle_task_count, (ts, self.idle_task_count)
             self._validate_ready(ts)
 
         ts.state = "queued"
@@ -3092,63 +3080,6 @@ class SchedulerState:
             len(tg) > self.total_nthreads * 2
             and len(tg.dependencies) < 5
             and sum(map(len, tg.dependencies)) < 5
-        )
-
-    def check_idle_saturated(self, ws: WorkerState, occ: float = -1.0) -> None:
-        """Update the status of the idle and saturated state
-
-        The scheduler keeps track of workers that are ..
-
-        -  Saturated: have enough work to stay busy
-        -  Idle: do not have enough work to stay busy
-
-        They are considered saturated if they both have enough tasks to occupy
-        all of their threads, and if the expected runtime of those tasks is
-        large enough.
-
-        If ``distributed.scheduler.worker-saturation`` is not ``inf``
-        (scheduler-side queuing is enabled), they are considered idle
-        if they have fewer tasks processing than the ``worker-saturation``
-        threshold dictates.
-
-        Otherwise, they are considered idle if they have fewer tasks processing
-        than threads, or if their tasks' total expected runtime is less than half
-        the expected runtime of the same number of average tasks.
-
-        This is useful for load balancing and adaptivity.
-        """
-        if self.total_nthreads == 0 or ws.status == Status.closed:
-            return
-        if occ < 0:
-            occ = ws.occupancy
-
-        p = len(ws.processing)
-
-        self.saturated.discard(ws)
-        if ws.status != Status.running:
-            self.idle.pop(ws.address, None)
-        elif self.is_unoccupied(ws, occ, p):
-            self.idle[ws.address] = ws
-        else:
-            self.idle.pop(ws.address, None)
-            nc = ws.nthreads
-            if p > nc:
-                pending = occ * (p - nc) / (p * nc)
-                if 0.4 < pending > 1.9 * (self.total_occupancy / self.total_nthreads):
-                    self.saturated.add(ws)
-
-        if not _worker_full(ws, self.WORKER_SATURATION) and ws.status == Status.running:
-            self.idle_task_count.add(ws)
-        else:
-            self.idle_task_count.discard(ws)
-
-    def is_unoccupied(
-        self, ws: WorkerState, occupancy: float, nprocessing: int
-    ) -> bool:
-        nthreads = ws.nthreads
-        return (
-            nprocessing < nthreads
-            or occupancy < nthreads * (self.total_occupancy / self.total_nthreads) / 2
         )
 
     def get_comm_cost(self, ts: TaskState, ws: WorkerState) -> float:
@@ -3357,7 +3288,6 @@ class SchedulerState:
         ts.processing_on = ws
         ts.state = "processing"
         self.acquire_resources(ts, ws)
-        self.check_idle_saturated(ws)
         self.n_tasks += 1
 
         if ts.actor:
@@ -3423,7 +3353,6 @@ class SchedulerState:
         if self.workers.get(ws.address) is not ws:  # may have been removed
             return None
 
-        self.check_idle_saturated(ws)
         self.release_resources(ts, ws)
 
         return ws
@@ -4547,10 +4476,6 @@ class Scheduler(SchedulerState, ServerNode):
             metrics=metrics,
         )
 
-        # Do not need to adjust self.total_occupancy as self.occupancy[ws] cannot
-        # exist before this.
-        self.check_idle_saturated(ws)
-
         self.stream_comms[address] = BatchedSend(interval="5ms", loop=self.loop)
 
         awaitables = []
@@ -5167,13 +5092,11 @@ class Scheduler(SchedulerState, ServerNode):
         so any tasks that became runnable are already in ``processing``. Otherwise,
         overproduction can occur if queued tasks get scheduled before downstream tasks.
 
-        Must be called after `check_idle_saturated`; i.e. `idle_task_count` must be up to date.
         """
         if not self.queued:
             return
         slots_available = sum(
-            _task_slots_available(ws, self.WORKER_SATURATION)
-            for ws in self.idle_task_count
+            _task_slots_available(ws, self.WORKER_SATURATION) for ws in self.running
         )
         if slots_available == 0:
             return
@@ -5403,9 +5326,6 @@ class Scheduler(SchedulerState, ServerNode):
         self.rpc.remove(address)
         del self.stream_comms[address]
         del self.aliases[ws.name]
-        self.idle.pop(ws.address, None)
-        self.idle_task_count.discard(ws)
-        self.saturated.discard(ws)
         del self.workers[address]
         self._workers_removed_total += 1
         ws.status = Status.closed
@@ -5734,23 +5654,6 @@ class Scheduler(SchedulerState, ServerNode):
         if not (set(self.workers) == set(self.stream_comms)):
             raise ValueError("Workers not the same in all collections")
 
-        assert self.running.issuperset(self.idle.values()), (
-            self.running.copy(),
-            set(self.idle.values()),
-        )
-        assert self.running.issuperset(self.idle_task_count), (
-            self.running.copy(),
-            self.idle_task_count.copy(),
-        )
-        assert self.running.issuperset(self.saturated), (
-            self.running.copy(),
-            self.saturated.copy(),
-        )
-        assert self.saturated.isdisjoint(self.idle.values()), (
-            self.saturated.copy(),
-            set(self.idle.values()),
-        )
-
         task_prefix_counts: defaultdict[str, int] = defaultdict(int)
         for w, ws in self.workers.items():
             assert isinstance(w, str), (type(w), w)
@@ -5761,14 +5664,10 @@ class Scheduler(SchedulerState, ServerNode):
                 assert ws in self.running
             else:
                 assert ws not in self.running
-                assert ws.address not in self.idle
-                assert ws not in self.saturated
 
             assert ws.long_running.issubset(ws.processing)
             if not ws.processing:
                 assert not ws.occupancy
-                if ws.status == Status.running:
-                    assert ws.address in self.idle
             assert not ws.needs_what.keys() & ws.has_what
             actual_needs_what: defaultdict[TaskState, int] = defaultdict(int)
             for ts in ws.processing:
@@ -6031,7 +5930,6 @@ class Scheduler(SchedulerState, ServerNode):
                 ts.prefix.duration_average = (old_duration + compute_duration) / 2
 
         ws.add_to_long_running(ts)
-        self.check_idle_saturated(ws)
 
         self.stimulus_queue_slots_maybe_opened(stimulus_id=stimulus_id)
 
@@ -6059,16 +5957,12 @@ class Scheduler(SchedulerState, ServerNode):
 
         if ws.status == Status.running:
             self.running.add(ws)
-            self.check_idle_saturated(ws)
             self.transitions(
                 self.bulk_schedule_unrunnable_after_adding_worker(ws), stimulus_id
             )
             self.stimulus_queue_slots_maybe_opened(stimulus_id=stimulus_id)
         else:
             self.running.discard(ws)
-            self.idle.pop(ws.address, None)
-            self.idle_task_count.discard(ws)
-            self.saturated.discard(ws)
         self._refresh_no_workers_since()
 
     def handle_request_refresh_who_has(

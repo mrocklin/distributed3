@@ -37,6 +37,7 @@ from distributed.system import MEMORY_LIMIT
 from distributed.utils import wait_for
 from distributed.utils_test import (
     NO_AMM,
+    BlockedGatherDep,
     BlockedGetData,
     captured_logger,
     freeze_batched_send,
@@ -702,12 +703,23 @@ async def assert_balanced(inp, expected, c, s, *workers):
 
     # Balance several times since stealing might attempt to steal the already executing task
     # for each saturated worker and will need a chance to correct its mistake
-    for _ in workers:
+    previous = steal.count
+    print("# balance", steal.count)
+    steal.balance()
+    await steal.stop()
+    print(steal.count)
+    print([msg[1] for msg in s.get_events("stealing")])
+    while steal.count != previous:
+        previous = steal.count
+        print("# balance", steal.count)
         steal.balance()
         # steal.stop() ensures that all in-flight stealing requests have been resolved
         await steal.stop()
-
+        print(steal.count)
+        print([msg[1] for msg in s.get_events("stealing")])
     await ev.set()
+    for w in workers:
+        w.block_gather_dep.set()
     await c.gather([f for fs in futures_per_worker.values() for f in fs])
 
     result = [
@@ -752,15 +764,9 @@ async def assert_balanced(inp, expected, c, s, *workers):
             [[0, 0], [0, 0], [0], [0]],
             id="no one clearly saturated",
         ),
-        # NOTE: There is a timing issue that workers may already start executing
-        # tasks before we call balance, i.e. the workers will reject the
-        # stealing request and we end up with a different end result.
-        # Particularly tests with many input tasks are more likely to fail since
-        # the test setup takes longer and allows the workers more time to
-        # schedule a task on the threadpool
         pytest.param(
             [[4, 2, 2, 2, 2, 1, 1], [4, 2, 1, 1], [], [], []],
-            [[4, 2, 2, 2], [4, 2, 1, 1], [2], [1], [1]],
+            [[4, 2, 2, 2, 2], [4, 2, 1], [1], [1], [1]],
             id="balance multiple saturated workers",
         ),
     ],
@@ -772,9 +778,12 @@ def test_balance(inp, expected):
     config = {
         "distributed.scheduler.default-task-durations": {str(i): 1 for i in range(10)}
     }
-    gen_cluster(client=True, nthreads=[("", 1)] * len(inp), config=config)(
-        test_balance_
-    )()
+    gen_cluster(
+        client=True,
+        Worker=BlockedGatherDep,
+        nthreads=[("", 1)] * len(inp),
+        config=config,
+    )(test_balance_)()
 
 
 @gen_cluster(client=True, nthreads=[("127.0.0.1", 1)] * 2, Worker=Nanny, timeout=60)
@@ -1487,12 +1496,8 @@ def test_balance_multiple_to_replica():
     def _correct_placement(actual):
         actual_task_counts = [len(placed) for placed in actual]
         # FIXME: A better task placement would be even but the current balancing
-        # logic aborts as soon as a worker is no longer classified as idle
-        # return actual_task_counts == [
-        #     4,
-        #     4,
-        #     0,
-        # ]
+        # logic only steals when a worker has an idle thread which makes it a
+        # little less aggressive
         return actual_task_counts == [
             6,
             2,
@@ -1690,12 +1695,6 @@ async def _dependency_balance_test_permutation(
         s,
         workers,
     )
-
-    # Re-evaluate idle/saturated classification to avoid outdated classifications due to
-    # the initialization order of workers. On a real cluster, this would get constantly
-    # updated by tasks being added or completing.
-    for ws in s.workers.values():
-        s.check_idle_saturated(ws)
 
     # Balance several since stealing might attempt to steal the already executing task
     # for each saturated worker and will need a chance to correct its mistake
