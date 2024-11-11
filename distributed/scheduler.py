@@ -4615,7 +4615,7 @@ class Scheduler(SchedulerState, ServerNode):
     def _find_lost_dependencies(
         self,
         dsk: dict[Key, T_runspec],
-        dependencies: dict[Key, set[Key]],
+        dependencies: DependenciesMapping,
         keys: set[Key],
     ) -> set[Key]:
         lost_keys = set()
@@ -4646,7 +4646,7 @@ class Scheduler(SchedulerState, ServerNode):
         *,
         start: float,
         dsk: dict[Key, T_runspec],
-        dependencies: dict,
+        dependencies: DependenciesMapping,
         keys: set[Key],
         ordered: dict[Key, int],
         client: str,
@@ -4796,7 +4796,7 @@ class Scheduler(SchedulerState, ServerNode):
     def _remove_done_tasks_from_dsk(
         self,
         dsk: dict[Key, T_runspec],
-        dependencies: dict[Key, set[Key]],
+        dependencies: DependenciesMapping,
     ) -> None:
         # Avoid computation that is already finished
         done = set()  # tasks that are already done
@@ -4827,7 +4827,6 @@ class Scheduler(SchedulerState, ServerNode):
                             stack.append(dep)
         for anc in done:
             dsk.pop(anc, None)
-            dependencies.pop(anc, None)
 
     @log_errors
     async def update_graph(
@@ -4888,19 +4887,7 @@ class Scheduler(SchedulerState, ServerNode):
             dsk = _cull(dsk, keys)
 
             if not internal_priority:
-                # Removing all non-local keys before calling order()
-                dsk_keys = set(
-                    dsk
-                )  # intersection() of sets is much faster than dict_keys
-                stripped_deps = {
-                    k: v.intersection(dsk_keys)
-                    for k, v in dependencies.items()
-                    if k in dsk_keys
-                }
-
-                internal_priority = await offload(
-                    dask.order.order, dsk=dsk, dependencies=stripped_deps
-                )
+                internal_priority = await offload(dask.order.order, dsk=dsk)
             ordering_done = time()
             logger.debug("Ordering done.")
 
@@ -9391,7 +9378,7 @@ def _materialize_graph(
     global_annotations: dict[str, Any],
     validate: bool,
     keys: set[Key],
-) -> tuple[dict[Key, T_runspec], dict[Key, set[Key]], dict[str, dict[Key, Any]]]:
+) -> tuple[dict[Key, T_runspec], DependenciesMapping, dict[str, dict[Key, Any]]]:
     dsk: dict = ensure_dict(graph)
     if validate:
         for k in dsk:
@@ -9420,9 +9407,7 @@ def _materialize_graph(
     logger.debug(
         "Removing aliases. Started with %i and got %i left", len(dsk2), len(dsk3)
     )
-    # FIXME: There should be no need to fully materialize and copy this but some
-    # sections in the scheduler are mutating it.
-    dependencies = {k: set(v) for k, v in DependenciesMapping(dsk3).items()}
+    dependencies = DependenciesMapping(dsk3)
     return dsk3, dependencies, annotations_by_type
 
 
