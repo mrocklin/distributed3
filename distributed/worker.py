@@ -3224,21 +3224,17 @@ else:
     DEFAULT_METRICS["rmm"] = rmm_metric
     del _rmm
 
-# avoid importing cuDF unless explicitly enabled
+
+async def cudf_metric(worker):
+    # avoid importing optional cudf at the top-level
+    from distributed.diagnostics import cudf
+
+    result = await offload(cudf.real_time)
+    return result
+
+
 if dask.config.get("distributed.diagnostics.cudf"):
-    try:
-        import cudf as _cudf  # noqa: F401
-    except Exception:
-        pass
-    else:
-        from distributed.diagnostics import cudf
-
-        async def cudf_metric(worker):
-            result = await offload(cudf.real_time)
-            return result
-
-        DEFAULT_METRICS["cudf"] = cudf_metric
-        del _cudf
+    DEFAULT_METRICS["cudf"] = cudf_metric
 
 
 def print(
