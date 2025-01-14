@@ -3121,6 +3121,40 @@ async def test_failing_task_increments_suspicious(client, s, a, b):
     )
 
 
+@gen_cluster(
+    client=True,
+    Worker=Nanny,
+    config={
+        "distributed.scheduler.allowed-failures": 0,
+        "distributed.scheduler.worker-ttl": 2,
+    },
+)
+async def test_unresponsiveness_increments_suspicious(client, s, a, b):
+    def hold_gil(secs):
+        import ctypes, ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        if libc_name is None:
+            raise RuntimeError("Cannot find libc")
+        # Use libc in ctypes' "PyDLL" mode, which prevents CPython from
+        # releasing the GIL during procedure calls.
+        usleep = ctypes.PyDLL(libc_name)["usleep"]
+        usleep(int(1e6 * secs))
+
+    try:
+        hold_gil(0)
+    except Exception as e:
+        pytest.skip(f"hold_gil() does not work: {e}")
+
+    future = client.submit(hold_gil, 3)
+    await wait(future)
+
+    assert s.task_prefixes["hold_gil"].suspicious == 1
+    assert sum(tp.suspicious for tp in s.task_prefixes.values()) == sum(
+        ts.suspicious for ts in s.tasks.values()
+    )
+
+
 @gen_cluster(client=True)
 async def test_task_group_non_tuple_key(c, s, a, b):
     np = pytest.importorskip("numpy")
