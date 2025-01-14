@@ -1,4 +1,3 @@
-# https://pytest.org/latest/example/simple.html#control-skipping-of-tests-according-to-command-line-option
 from __future__ import annotations
 
 import pytest
@@ -27,13 +26,14 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--runslow"):
-        # --runslow given in cli: do not skip slow tests
-        return
-    skip_slow = pytest.mark.skip(reason="need --runslow option to run")
+    # https://pytest.org/latest/example/simple.html#control-skipping-of-tests-according-to-command-line-option
+    if skip_slow := not config.getoption("--runslow"):
+        # --runslow not given in cli: skip slow tests
+        skip_slow_marker = pytest.mark.skip(reason="need --runslow option to run")
+
     for item in items:
-        if "slow" in item.keywords:
-            item.add_marker(skip_slow)
+        if skip_slow and "slow" in item.keywords:
+            item.add_marker(skip_slow_marker)
 
         if "ws" in item.fixturenames:
             item.add_marker(pytest.mark.workerstate)
