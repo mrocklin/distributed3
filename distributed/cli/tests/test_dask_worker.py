@@ -193,6 +193,7 @@ async def test_nanny_worker_ports(c, s):
         )
 
 
+@pytest.mark.skip(reason="flaky, probably due to popen")
 @pytest.mark.slow
 @pytest.mark.flaky(
     LINUX and sys.version_info[:2] == (3, 9),
