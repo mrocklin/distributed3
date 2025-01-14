@@ -1298,6 +1298,8 @@ def test_localcluster_start_exception(loop):
             plugins={MyPlugin()},
             loop=loop,
         ):
+            return
+
             pass
 
 
@@ -1311,3 +1313,8 @@ def test_localcluster_get_client(loop):
             with Client(cluster) as client2:
                 assert client1 != client2
                 assert client2 == cluster.get_client()
+
+
+def test_dashboard_address_is_None():
+    with LocalCluster(n_workers=1, dashboard_address=None) as cluster1:
+        assert cluster1.dashboard_link is None
