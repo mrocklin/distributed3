@@ -2777,6 +2777,17 @@ class Client(SyncMethodMixin):
                 "Consider using a normal for loop and Client.submit"
             )
 
+        if broadcast and dask.config.get(
+            "distributed.scheduler.active-memory-manager.start"
+        ):
+            raise RuntimeError(
+                "Scattering data with broadcast=True is incompatible "
+                "with the Active Memory Manager’s ReduceReplicas "
+                "policy. Please disable the AMM plugin by setting "
+                "the following config to False: "
+                "'distributed.scheduler.active-memory-manager.start'"
+            )
+
         try:
             local_worker = get_worker()
         except ValueError:

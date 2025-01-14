@@ -2358,6 +2358,12 @@ async def test__broadcast(c, s, a, b):
     assert a.data == b.data == {x.key: 1, y.key: 2}
 
 
+@gen_cluster(client=True)
+async def test__broadcast_raises(c, s, a, b):
+    with pytest.raises(RuntimeError):
+        await c.scatter([1, 2], broadcast=True)
+
+
 @gen_cluster(client=True, nthreads=[("127.0.0.1", 1)] * 4, config=NO_AMM)
 async def test__broadcast_integer(c, s, *workers):
     x, y = await c.scatter([1, 2], broadcast=2)
