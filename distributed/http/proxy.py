@@ -15,6 +15,10 @@ try:
         from a port to any valid endpoint'.
         """
 
+        def __init__(self, *args, **kwargs):
+            kwargs["host_allowlist"] = lambda handler, host: True
+            super().__init__(*args, **kwargs)
+
         def initialize(self, dask_server=None, extra=None):
             self.scheduler = dask_server
             self.extra = extra or {}
