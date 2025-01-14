@@ -1214,17 +1214,20 @@ class rpc:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.close_rpc()
 
-    def __del__(self):
-        if self.status != Status.closed:
+    def __del__(self, _warn=warnings.warn):
+        if getattr(self, "status", Status.closed) != Status.closed:
+            try:
+                self_r = repr(self)  # grab the repr before we close it
+            except Exception:
+                self_r = f"with a broken __repr__ {object.__repr__(self)}"
+
             rpc.active.discard(self)
             self.status = Status.closed
             still_open = [comm for comm in self.comms if not comm.closed()]
             if still_open:
-                logger.warning(
-                    "rpc object %s deleted with %d open comms", self, len(still_open)
-                )
                 for comm in still_open:
                     comm.abort()
+            _warn(f"unclosed rpc {self_r}", ResourceWarning, source=self)
 
     def __repr__(self):
         return "<rpc to %r, %d comms>" % (self.address, len(self.comms))
