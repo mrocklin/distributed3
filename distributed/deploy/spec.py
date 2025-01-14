@@ -259,7 +259,7 @@ class SpecCluster(Cluster):
         self.new_spec = copy.copy(worker)
         self.scheduler = None
         self.workers = {}
-        self._i = 0
+        self._current_worker_index: int = 0
         self.security = security or Security()
         self._futures = set()
 
@@ -550,10 +550,8 @@ class SpecCluster(Cluster):
         --------
         scale
         """
-        new_worker_name = self._new_worker_name(self._i)
-        while new_worker_name in self.worker_spec:
-            self._i += 1
-            new_worker_name = self._new_worker_name(self._i)
+        new_worker_name = self._new_worker_name(self._current_worker_index)
+        self._current_worker_index += 1
 
         return {new_worker_name: self.new_spec}
 
