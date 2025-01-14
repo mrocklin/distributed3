@@ -15,9 +15,10 @@ function defined with ``async/await`` syntax.
 .. code-block:: python
 
    async def f():
-       client = await Client(asynchronous=True)
+       async with Client(asynchronous=True) as client:
+           ...
 
-Operations that used to block now provide Tornado coroutines on which you can
+Operations that used to block now provide async functions on which you can
 ``await``.
 
 Fast functions that only submit work remain fast and don't need to be awaited.
@@ -80,30 +81,24 @@ Example
 -------
 
 This self-contained example starts an asynchronous client, submits a trivial
-job, waits on the result, and then shuts down the client. You can see
-implementations for Asyncio and Tornado.
+job, waits on the result, and then shuts down the client.
 
-Python 3 with Tornado or Asyncio
-++++++++++++++++++++++++++++++++
+Python with Asyncio
++++++++++++++++++++
 
 .. code-block:: python
+
+   import asyncio
 
    from dask.distributed import Client
 
    async def f():
-       client = await Client(asynchronous=True)
-       future = client.submit(lambda x: x + 1, 10)
-       result = await future
-       await client.close()
+       async with Client(asynchronous=True) as client:
+          future = client.submit(lambda x: x + 1, 10)
+          result = await future
        return result
 
-   # Either use Tornado
-   from tornado.ioloop import IOLoop
-   IOLoop().run_sync(f)
-
-   # Or use asyncio
-   import asyncio
-   asyncio.get_event_loop().run_until_complete(f())
+   asyncio.run(f())
 
 
 Use Cases

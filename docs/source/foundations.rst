@@ -99,10 +99,12 @@ Server Side
            data += 1
            await comm.write(data)
 
-   s = Server({'add': add, 'stream_data': stream_data})
-   s.listen('tcp://:8888')   # listen on TCP port 8888
+   async def amain():
+       async with Server({'add': add, 'stream_data': stream_data}) as s:
+           await s.listen('tcp://:8888')   # listen on TCP port 8888
+           await asyncio.Event().wait()  # run forever
 
-   asyncio.get_event_loop().run_forever()
+   asyncio.run(amain())
 
 
 Client Side
@@ -115,22 +117,31 @@ Client Side
 
    async def f():
        comm = await connect('tcp://127.0.0.1:8888')
-       await comm.write({'op': 'add', 'x': 1, 'y': 2})
-       result = await comm.read()
+       try:
+           await comm.write({'op': 'add', 'x': 1, 'y': 2})
+           result = await comm.read()
+       except BaseException:
+           comm.abort()
+           raise
        await comm.close()
        print(result)
 
-   >>> asyncio.get_event_loop().run_until_complete(f())
+   >>> asyncio.run(f())
    3
 
    async def g():
        comm = await connect('tcp://127.0.0.1:8888')
-       await comm.write({'op': 'stream_data', 'interval': 1})
-       while True:
-           result = await comm.read()
-           print(result)
+       try:
+           await comm.write({'op': 'stream_data', 'interval': 1})
+           while True:
+               result = await comm.read()
+               print(result)
+       except BaseException:
+           comm.abort()
+           raise
+       await comm.close()
 
-   >>> asyncio.get_event_loop().run_until_complete(g())
+   >>> asyncio.run(g())
    1
    2
    3
@@ -159,5 +170,5 @@ with the stream data case above.
 
        print(result)
 
-   >>> asyncio.get_event_loop().run_until_complete(f())
+   >>> asyncio.run(f())
    3
