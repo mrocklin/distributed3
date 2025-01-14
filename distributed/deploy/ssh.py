@@ -124,16 +124,21 @@ class Worker(Process):
         )
         self.n_workers = value
 
-    async def start(self):
-        try:
-            import asyncssh  # import now to avoid adding to module startup time
-        except ImportError:
-            raise ImportError(
-                "Dask's SSHCluster requires the `asyncssh` package to be installed. "
-                "Please install it using pip or conda."
-            )
+    async def start(self, connection=None):
+        if connection is None:
+            try:
+                import asyncssh  # import now to avoid adding to module startup time
+            except ImportError:
+                raise ImportError(
+                    "Dask's SSHCluster requires the `asyncssh` package to be installed. "
+                    "Please install it using pip or conda."
+                )
 
-        self.connection = await asyncssh.connect(self.address, **self.connect_options)
+            self.connection = await asyncssh.connect(
+                self.address, **self.connect_options
+            )
+        else:
+            self.connection = connection
 
         result = await self.connection.run("uname")
         if result.exit_status == 0:
@@ -222,18 +227,23 @@ class Scheduler(Process):
         self.connect_options = connect_options
         self.remote_python = remote_python or sys.executable
 
-    async def start(self):
-        try:
-            import asyncssh  # import now to avoid adding to module startup time
-        except ImportError:
-            raise ImportError(
-                "Dask's SSHCluster requires the `asyncssh` package to be installed. "
-                "Please install it using pip or conda."
+    async def start(self, connection=None):
+        if connection is None:
+            try:
+                import asyncssh  # import now to avoid adding to module startup time
+            except ImportError:
+                raise ImportError(
+                    "Dask's SSHCluster requires the `asyncssh` package to be installed. "
+                    "Please install it using pip or conda."
+                )
+
+            logger.debug("Created Scheduler Connection")
+
+            self.connection = await asyncssh.connect(
+                self.address, **self.connect_options
             )
-
-        logger.debug("Created Scheduler Connection")
-
-        self.connection = await asyncssh.connect(self.address, **self.connect_options)
+        else:
+            self.connection = connection
 
         result = await self.connection.run("uname")
         if result.exit_status == 0:
