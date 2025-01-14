@@ -89,6 +89,46 @@ class Adaptive(AdaptiveCore):
     >>> cluster = MyCluster()
     >>> cluster.adapt(minimum=10, maximum=100)
 
+    In some cases, you may want to subclass Adaptive for custom functionality.
+    As mentioned, for example, you might need to override :meth:`Adaptive.workers_to_close`
+    to determine how workers are removed from the cluster in accordance to your workload's
+    memory requirements. Same thing goes for other class methods like :meth:`Adaptive.target`.
+    For example, you can modify the actual target time for the work to be done in half of the actual
+    target time, which will also increases how rapidly the scheduler asks to scale to get the work
+    done.
+
+    >>> from distributed import Adaptive
+    >>> from dask.distributed import Client, LocalCluster
+    >>> from distributed import Adaptive
+    >>> from random import random
+
+    >>> class MyAdaptive(Adaptive):
+    ...    def __init__(self, cluster=None, **kwargs):
+    ...        self.factor = kwargs.pop('factor', 1) # factor to reduce target time by half
+    ...        super().__init__(cluster=cluster, **kwargs)
+
+    ...     async def target(self) -> int:
+    ...        """ Determine target number of workers """
+    ...        # new duration after modifying target time
+    ...        new_duration = self.target_duration * self.factor
+    ...        return await self.scheduler.adaptive_target(
+    ...             target_duration=new_duration
+    ...        )
+
+    >>> def add(one, two):  # simple function to add two numbers
+    ...    return one + two
+
+    >>> if __name__ == "__main__":
+
+    ...    cluster = LocalCluster(n_workers=1, memory_limit=0)
+    ...    # pass factor as an additional argument to the adapt method
+    ...    cluster.adapt(Adaptive = MyAdaptive,minimum=1, maximum=10, factor=0.5)
+    ...    client = Client(cluster)
+
+    ...    for i in range(5000):
+    ...        client.submit(add, random(), random())
+
+
     Notes
     -----
     Subclasses can override :meth:`Adaptive.target` and
