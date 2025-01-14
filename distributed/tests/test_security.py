@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import ssl
 from contextlib import contextmanager
 
@@ -83,6 +84,14 @@ def test_from_config():
     assert sec.tls_scheduler_cert == "scert.pem"
     assert sec.tls_worker_key is None
     assert sec.tls_worker_cert == "wcert.pem"
+
+
+def test_expand_vars():
+    from pathlib import Path
+
+    cert_path = str(Path("{HOME}") / "cert.pem")
+    s = Security(tls_ca_file=cert_path)
+    assert s.tls_ca_file == str(Path(os.environ["HOME"]) / "cert.pem")
 
 
 @pytest.mark.parametrize("min_ver", [None, 1.2, 1.3])

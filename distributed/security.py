@@ -216,6 +216,10 @@ class Security:
             val = kwargs[field]
         else:
             val = dask.config.get(config_name)
+
+        if val is not None:
+            val = val.format(**os.environ)
+
         setattr(self, field, val)
 
     def _set_tls_version_field(self, kwargs, field, config_name, default=None):
