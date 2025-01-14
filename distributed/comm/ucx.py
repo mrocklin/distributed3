@@ -526,7 +526,9 @@ class UCXListener(BaseListener):
                 await self.comm_handler(ucx)
 
         init_once()
-        self.ucp_server = ucp.create_listener(serve_forever, port=self._input_port)
+        self.ucp_server = ucp.create_listener(
+            serve_forever, port=self._input_port, ip_address=self.ip
+        )
 
     def stop(self):
         self.ucp_server = None

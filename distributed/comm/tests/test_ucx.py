@@ -392,6 +392,15 @@ async def test_ucx_protocol(ucx_loop, cleanup, port):
         assert s.address.startswith("ucx://")
 
 
+@gen_test()
+async def test_ucx_listener_ip(ucx_loop, cleanup):
+    async with Scheduler(
+        protocol="ucx", interface="localhost", dashboard_address=":0"
+    ) as s:
+        assert s.address.startswith("ucx://127.0.0.1")
+        assert s.listener.ucp.server.ip == "127.0.0.1"
+
+
 @pytest.mark.skipif(
     not hasattr(ucp.exceptions, "UCXUnreachable"),
     reason="Requires UCX-Py support for UCXUnreachable exception",
