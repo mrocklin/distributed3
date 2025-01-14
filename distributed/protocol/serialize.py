@@ -286,7 +286,7 @@ def serialize(  # type: ignore[no-untyped-def]
             serializers=serializers,
             on_error=on_error,
             context=context,
-            iterate_collection=True,
+            iterate_collection=iterate_collection,
         )
 
     # Note: don't use isinstance(), as it would match subclasses
