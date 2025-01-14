@@ -11,6 +11,11 @@ coverage:
   round: down
   range: "92...100"
 
+  # Prevent red "X"s from showing up on PR checks
+  # before all CI builds have completed
+  notify:
+    wait_for_ci: yes
+
   status:
     project:
       default:
