@@ -33,7 +33,7 @@ import linecache
 import sys
 import threading
 from collections import defaultdict, deque
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from time import sleep
 from types import FrameType
 from typing import Any
@@ -218,10 +218,9 @@ def process(
         return None
 
 
-def merge(*args: dict[str, Any]) -> dict[str, Any]:
-    """Merge multiple frame states together"""
-    if not args:
-        return create()
+def _merge_one_iteration(
+    args: Sequence[Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[Any]]]:
     s = {arg["identifier"] for arg in args}
     if len(s) != 1:  # pragma: no cover
         raise ValueError(f"Expected identifiers, got {s}")
@@ -230,17 +229,32 @@ def merge(*args: dict[str, Any]) -> dict[str, Any]:
         for child in arg["children"]:
             children[child].append(arg["children"][child])
 
-    try:
-        children_dict = {k: merge(*v) for k, v in children.items()}
-    except RecursionError:  # pragma: no cover
-        children_dict = {}
+    children_dict: dict[str, Any] = {}
     count = sum(arg["count"] for arg in args)
-    return {
+    parent = {
         "description": args[0]["description"],
         "children": children_dict,
         "count": count,
         "identifier": args[0]["identifier"],
     }
+    return parent, children_dict, children
+
+
+def merge(*args: dict[str, Any]) -> dict[str, Any]:
+    """Merge multiple frame states together"""
+    if not args:
+        return create()
+    parent, children_dict, children = _merge_one_iteration(args)
+    stack = deque([(children_dict, children)])
+    while stack:
+        children_dict, children = stack.popleft()
+        for k, args_list in children.items():
+            children_dict[k], child_children_dict, children = _merge_one_iteration(
+                args_list
+            )
+            stack.append((child_children_dict, children))
+
+    return parent
 
 
 def create() -> dict[str, Any]:
