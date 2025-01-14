@@ -218,6 +218,7 @@ def start_scheduler(
         cmd += "&> {logdir}/dask_scheduler_{addr}:{port}.log".format(
             addr=addr, port=port, logdir=logdir
         )
+        cmd = '/bin/bash -c "{cmd}"'.format(cmd=cmd)
 
     # Format output labels we can prepend to each line of output, and create
     # a 'status' key to keep track of jobs that terminate prematurely.
@@ -307,6 +308,7 @@ def start_worker(
         cmd += "&> {logdir}/dask_scheduler_{addr}.log".format(
             addr=worker_addr, logdir=logdir
         )
+        cmd = '/bin/bash -c "{cmd}"'.format(cmd=cmd)
 
     label = f"worker {worker_addr}"
 
