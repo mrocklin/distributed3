@@ -29,8 +29,11 @@ async def test_prometheus_api_doc(c, s, a, _):
     """
     pytest.importorskip("prometheus_client")
 
-    documented = set()
     root_dir = pathlib.Path(__file__).parent.parent.parent.parent
+    if not (root_dir / ".git").exists():
+        pytest.skip("Not running in a git checkout")
+
+    documented = set()
     with open(root_dir / "docs" / "source" / "prometheus.rst") as fh:
         for row in fh:
             row = row.strip()
