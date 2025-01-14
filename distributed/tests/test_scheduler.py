@@ -596,6 +596,25 @@ async def test_queued_remove_add_worker(c, s, a, b):
         await wait(fs)
 
 
+@gen_cluster(
+    client=True,
+    nthreads=[("", 2)] * 1,
+    config={"distributed.scheduler.worker-saturation": 1.0},
+)
+async def test_queued_balance_scale_up_from_one(c, s, a):
+    event = Event()
+    fs = c.map(lambda x: event.wait(), range(12), key=[f"wait-{i}" for i in range(12)])
+    await wait_for_state(fs[0].key, "executing", a)
+    if len(a.state.tasks) != a.state.nthreads:
+        pytest.fail(f"Test assumptions have changed, {a.state.tasks=}")
+
+    async with Worker(s.address, nthreads=2) as b:
+        async with Worker(s.address, nthreads=2) as c:
+            await event.set()
+            await wait(fs)
+            assert [len(ws.has_what) for ws in s.workers.values()] == [4, 4, 4]
+
+
 @gen_cluster(client=True, nthreads=[("", 1)])
 async def test_secede_opens_slot(c, s, a):
     first = Event()
