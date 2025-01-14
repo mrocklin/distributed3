@@ -6,6 +6,7 @@ import warnings
 
 import toolz
 
+import dask
 from dask.system import CPU_COUNT
 from dask.widgets import get_template
 
@@ -201,17 +202,18 @@ class LocalCluster(SpecCluster):
 
         services = services or {}
         worker_services = worker_services or {}
+        cpu_count = dask.config.get("num_workers", CPU_COUNT)
         if n_workers is None and threads_per_worker is None:
             if processes:
-                n_workers, threads_per_worker = nprocesses_nthreads()
+                n_workers, threads_per_worker = nprocesses_nthreads(cpu_count)
             else:
                 n_workers = 1
-                threads_per_worker = CPU_COUNT
+                threads_per_worker = cpu_count
         if n_workers is None and threads_per_worker is not None:
-            n_workers = max(1, CPU_COUNT // threads_per_worker) if processes else 1
+            n_workers = max(1, cpu_count // threads_per_worker) if processes else 1
         if n_workers and threads_per_worker is None:
             # Overcommit threads per worker, rather than undercommit
-            threads_per_worker = max(1, int(math.ceil(CPU_COUNT / n_workers)))
+            threads_per_worker = max(1, int(math.ceil(cpu_count / n_workers)))
         if n_workers and "memory_limit" not in worker_kwargs:
             worker_kwargs["memory_limit"] = parse_memory_limit(
                 "auto", 1, n_workers, logger=logger
