@@ -1,29 +1,45 @@
 Client
 ========
 
-The Client is the primary entry point for users of ``dask.distributed``.
+The Client connects you with a scheduler running on a particular cluster. Creating a client
+is the first step to using ``dask.distributed``. After you create a Client:
 
-After we `setup a cluster <https://docs.dask.org/en/latest/setup.html>`_, we initialize a ``Client`` by pointing
-it to the address of a ``Scheduler``:
+- all Dask objects (such as dask.array_, dask.bag_, dask.dataframe_ 
+  and dask.delayed_) will use the specified cluster for evaluation
 
-.. code-block:: python
+- you can directly submit tasks for immediate non-blocking computation
 
-   >>> from distributed import Client
-   >>> client = Client('127.0.0.1:8786')
+Creating a Client
+-----------------
 
-There are a few different ways to interact with the cluster through the client:
+There are three main ways in which ``Client`` can be instantiated depending on what type
+of cluster you are connecting to.
 
-1.  The Client satisfies most of the standard concurrent.futures_ - PEP-3148_
-    interface with ``.submit``, ``.map`` functions and ``Future`` objects,
-    allowing the immediate and direct submission of tasks.
-2.  The Client registers itself as the default Dask_ scheduler, and so runs all
-    dask collections like dask.array_, dask.bag_, dask.dataframe_ and dask.delayed_
-3.  The Client has additional methods for manipulating data remotely.  See the
-    full :doc:`API <api>` for a thorough list.
+- If you have an existing cluster that is managed elsewhere, use the scheduler address:
+
+   .. code-block:: python
+
+      >>> from distributed import Client
+      >>> client = Client('127.0.0.1:8786')
+
+- If you are creating a cluster in the current python session, use the cluster object:
+
+   .. code-block:: python
+
+      >>> from distributed import LocalCluster, Client
+      >>> cluster = LocalCluster()  # this can be any type of cluster
+      >>> client = Client(cluster)
+
+
+- If you are creating an ephemeral cluster on the fly you can call ``Client()`` with no arguments.
+  This creates a :class:`distributed.LocalCluster` for you automatically, 
+  with defaults that are reasonable for a one-machine cluster.
 
 
 Concurrent.futures
 ------------------
+Client satisfies most of the standard concurrent.futures_ - PEP-3148_
+interface with ``.submit``, ``.map`` functions and ``Future`` objects.
 
 We can submit individual function calls with the ``client.submit`` method or
 many function calls with the ``client.map`` method
