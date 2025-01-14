@@ -24,6 +24,7 @@ from tornado.ioloop import IOLoop
 
 import dask
 from dask import bag, delayed
+from dask.base import DaskMethodsMixin
 from dask.core import flatten
 from dask.highlevelgraph import HighLevelGraph, MaterializedLayer
 from dask.utils import parse_timedelta, tmpfile, typename
@@ -5315,3 +5316,34 @@ async def test_alias_resolving_break_queuing(c, s, a):
     while not s.tasks:
         await asyncio.sleep(0.01)
     assert sum([s.is_rootish(v) for v in s.tasks.values()]) == 18
+
+
+@gen_cluster(client=True, nthreads=[("", 1)])
+async def test_data_producers(c, s, a):
+    from dask._task_spec import DataNode, Task, TaskRef
+
+    def func(*args):
+        return 100
+
+    class MyArray(DaskMethodsMixin):
+        def __dask_graph__(self):
+            return {
+                "a": DataNode("a", 10),
+                "b": Task("b", func, TaskRef("a"), _data_producer=True),
+                "c": Task("c", func, TaskRef("b")),
+                "d": Task("d", func, TaskRef("c")),
+            }
+
+        def __dask_keys__(self):
+            return ["d"]
+
+        def __dask_postcompute__(self):
+            return func, ()
+
+    arr = MyArray()
+    x = c.compute(arr)
+    await async_poll_for(lambda: s.tasks, 5)
+    assert (
+        sum([s.is_rootish(v) and v.run_spec.data_producer for v in s.tasks.values()])
+        == 2
+    )

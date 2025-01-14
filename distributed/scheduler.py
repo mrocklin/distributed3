@@ -3085,6 +3085,9 @@ class SchedulerState:
         """
         if ts.resource_restrictions or ts.worker_restrictions or ts.host_restrictions:
             return False
+        # Check explicitly marked data producer tasks
+        if ts.run_spec and ts.run_spec.data_producer:
+            return True
         tg = ts.group
         # TODO short-circuit to True if `not ts.dependencies`?
         return (
