@@ -510,19 +510,6 @@ async def test_lifetime(s):
 
 
 @gen_cluster(client=True, nthreads=[])
-async def test_nanny_closes_cleanly_if_worker_is_terminated(c, s):
-    async with Nanny(s.address) as n:
-        async with c.rpc(n.worker_address) as w:
-            IOLoop.current().add_callback(w.terminate)
-            start = time()
-            while n.status != Status.closed:
-                await asyncio.sleep(0.01)
-                assert time() < start + 5
-
-            assert n.status == Status.closed
-
-
-@gen_cluster(client=True, nthreads=[])
 async def test_config(c, s):
     async with Nanny(s.address, config={"foo": "bar"}) as n:
         config = await c.run(dask.config.get, "foo")

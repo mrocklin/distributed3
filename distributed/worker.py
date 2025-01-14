@@ -698,7 +698,6 @@ class Worker(BaseWorker, ServerNode):
             "get_data": self.get_data,
             "update_data": self.update_data,
             "free_keys": self._handle_remote_stimulus(FreeKeysEvent),
-            "terminate": self.close,
             "ping": pingpong,
             "upload_file": self.upload_file,
             "call_stack": self.get_call_stack,
