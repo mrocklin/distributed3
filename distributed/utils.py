@@ -256,8 +256,7 @@ async def All(args, quiet_exceptions=()):
             result = await tasks.next()
         except Exception:
 
-            @gen.coroutine
-            def quiet():
+            async def quiet():
                 """Watch unfinished tasks
 
                 Otherwise if they err they get logged in a way that is hard to
@@ -266,11 +265,11 @@ async def All(args, quiet_exceptions=()):
                 """
                 for task in list(tasks._unfinished):
                     try:
-                        yield task
+                        await task
                     except quiet_exceptions:
                         pass
 
-            quiet()
+            await quiet()
             raise
         results[tasks.current_index] = result
     return results
@@ -294,8 +293,7 @@ async def Any(args, quiet_exceptions=()):
             result = await tasks.next()
         except Exception:
 
-            @gen.coroutine
-            def quiet():
+            async def quiet():
                 """Watch unfinished tasks
 
                 Otherwise if they err they get logged in a way that is hard to
@@ -304,11 +302,11 @@ async def Any(args, quiet_exceptions=()):
                 """
                 for task in list(tasks._unfinished):
                     try:
-                        yield task
+                        await task
                     except quiet_exceptions:
                         pass
 
-            quiet()
+            await quiet()
             raise
 
         results[tasks.current_index] = result
