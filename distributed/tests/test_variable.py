@@ -24,7 +24,9 @@ async def test_variable(c, s, a, b):
 
     future = c.submit(inc, 1)
 
+    assert not await x.is_set()
     await x.set(future)
+    assert await x.is_set()
     future2 = await xx.get()
     assert future.key == future2.key
 
@@ -34,6 +36,7 @@ async def test_variable(c, s, a, b):
     assert s.tasks  # future still present
 
     x.delete()
+    assert not await x.is_set()
 
     start = time()
     while s.tasks:
