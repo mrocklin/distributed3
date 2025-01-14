@@ -1736,10 +1736,7 @@ class Client(SyncMethodMixin):
         self.close()
 
     def __del__(self):
-        # If the loop never got assigned, we failed early in the constructor,
-        # nothing to do
-        if self.__loop is not None:
-            self.close()
+        assert self.status in ["closed", "newly-created"]
 
     def _inc_ref(self, key):
         with self._refcount_lock:
