@@ -2424,7 +2424,7 @@ class SchedulerState:
                             ws = wp_i
                             break
             else:  # dumb but fast in large case
-                ws = wp_vals[self.n_tasks % n_workers]
+                raise RuntimeError("aaarrrhg")
 
         if self.validate and ws is not None:
             assert self.workers.get(ws.address) is ws
