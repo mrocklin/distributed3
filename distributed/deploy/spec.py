@@ -380,8 +380,8 @@ class SpecCluster(Cluster):
                 workers.append(worker)
             if workers:
                 worker_futs = [asyncio.ensure_future(w) for w in workers]
-                await asyncio.wait(worker_futs)
                 self.workers.update(dict(zip(to_open, workers)))
+                await asyncio.wait(worker_futs)
                 for w in workers:
                     w._cluster = weakref.ref(self)
                 # Collect exceptions from failed workers. This must happen after all
