@@ -1,6 +1,5 @@
 channels:
   - conda-forge
-  - defaults
 channel_priority: true
 auto_activate_base: false
 remote_backoff_factor: 20

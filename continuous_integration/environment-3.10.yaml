@@ -1,7 +1,6 @@
 name: dask-distributed
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python=3.10
   - packaging
@@ -39,7 +38,6 @@ dependencies:
   - pytest-rerunfailures
   - pytest-timeout
   - python-snappy  # Only tested here
-  - pytorch  # Only tested here
   - requests
   - s3fs  # overridden by git tip below
   - scikit-learn
@@ -47,7 +45,6 @@ dependencies:
   - sortedcollections
   - tblib
   - toolz
-  - torchvision  # Only tested here
   - tornado
   - zict  # overridden by git tip below
   - zstandard
@@ -63,3 +60,5 @@ dependencies:
       # - git+https://github.com/dask/s3fs
       # - git+https://github.com/fsspec/filesystem_spec
       - keras
+      - torch  # Only tested here (using pip due to lack of Windows conda-forge builds)
+      - torchvision  # Only tested here (using pip due to lack of Windows conda-forge builds)
