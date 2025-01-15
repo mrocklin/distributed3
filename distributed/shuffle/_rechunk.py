@@ -1042,7 +1042,7 @@ class ArrayRechunkRun(ShuffleRun[NDIndex, "np.ndarray"]):
             raise
 
     def _shard_partition(
-        self, data: np.ndarray, partition_id: NDIndex
+        self, data: np.ndarray, partition_id: NDIndex, **kwargs: Any
     ) -> dict[str, tuple[NDIndex, list[tuple[NDIndex, tuple[NDIndex, np.ndarray]]]]]:
         out: dict[str, list[tuple[NDIndex, tuple[NDIndex, np.ndarray]]]] = defaultdict(
             list

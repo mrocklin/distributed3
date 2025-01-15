@@ -352,7 +352,7 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
         """Receive shards belonging to output partitions of this shuffle run"""
 
     def add_partition(
-        self, data: _T_partition_type, partition_id: _T_partition_id
+        self, data: _T_partition_type, partition_id: _T_partition_id, **kwargs: Any
     ) -> int:
         self.raise_if_closed()
         if self.transferred:
@@ -364,13 +364,13 @@ class ShuffleRun(Generic[_T_partition_id, _T_partition_type]):
                 context_meter.meter("p2p-shard-partition-noncpu"),
                 context_meter.meter("p2p-shard-partition-cpu", func=thread_time),
             ):
-                shards = self._shard_partition(data, partition_id)
+                shards = self._shard_partition(data, partition_id, **kwargs)
             sync(self._loop, self._write_to_comm, shards)
         return self.run_id
 
     @abc.abstractmethod
     def _shard_partition(
-        self, data: _T_partition_type, partition_id: _T_partition_id
+        self, data: _T_partition_type, partition_id: _T_partition_id, **kwargs: Any
     ) -> dict[str, tuple[_T_partition_id, Any]]:
         """Shard an input partition by the assigned output workers"""
 
