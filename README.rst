@@ -1,7 +1,7 @@
 Distributed
 ===========
 
-|Test Status| |Longitudinal Report (full)| |Longitudinal Report (short)| |Coverage| |Doc Status| |Discourse| |Version Status| |NumFOCUS|
+|Test Status| |Longitudinal Report (full)| |Longitudinal Report (short)| |Coverage| |Doc Status| |Discourse| |Version Status| |NumFOCUS| |Gurubase|
 
 A library for distributed computation.  See documentation_ for more details.
 
@@ -27,3 +27,5 @@ A library for distributed computation.  See documentation_ for more details.
    :target: https://pypi.python.org/pypi/distributed/
 .. |NumFOCUS| image:: https://img.shields.io/badge/powered%20by-NumFOCUS-orange.svg?style=flat&colorA=E1523D&colorB=007D8A
    :target: https://www.numfocus.org/
+.. |Gurubase| image:: https://img.shields.io/badge/Gurubase-Ask%20Distributed%20Guru-006BFF
+   :target: https://gurubase.io/g/distributed
