@@ -66,6 +66,10 @@ repos:
           - urllib3
           - git+https://github.com/dask/dask
           - git+https://github.com/dask/zict
+# This script is heavily based on one from upstream cpython, applying
+# our style to it makes it unnecessarily hard to diff it against
+# the upstream version for future revisions
+exclude: make_tls_certs\.py
 
 # Increase this value to clear the cache on GitHub actions if nothing else in this file
 # has changed. See also same variable in .github/workflows/test.yaml
