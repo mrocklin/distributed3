@@ -252,3 +252,17 @@ def test_tuple_futures_arg(client, typ):
         ),
     )
     dd.assert_eq(df2.result().iloc[:0], make_time_dataframe().iloc[:0])
+
+
+def test_dataframe_checkpoint(client, tmp_path):
+    from distributed.checkpoint import DataFrameCheckpoint
+
+    df = make_time_dataframe()
+    ddf = dd.from_pandas(df, npartitions=10)
+
+    ckpt = DataFrameCheckpoint.create(ddf, str(tmp_path))
+    client.cancel(ddf)
+    del ddf
+
+    # Must use distributed scheduler to compute
+    dd.assert_eq(df, ckpt.load(), scheduler=None)
