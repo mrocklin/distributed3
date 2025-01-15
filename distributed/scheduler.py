@@ -108,9 +108,13 @@ from distributed.metrics import monotonic, time
 from distributed.multi_lock import MultiLockExtension
 from distributed.node import ServerNode
 from distributed.proctitle import setproctitle
-from distributed.protocol import deserialize
 from distributed.protocol.pickle import dumps, loads
-from distributed.protocol.serialize import Serialized, ToPickle, serialize
+from distributed.protocol.serialize import (
+    Serialized,
+    ToPickle,
+    merge_and_deserialize,
+    serialize,
+)
 from distributed.publish import PublishExtension
 from distributed.pubsub import PubSubSchedulerExtension
 from distributed.queues import QueueExtension
@@ -4849,7 +4853,7 @@ class Scheduler(SchedulerState, ServerNode):
         try:
             logger.debug("Received new graph. Deserializing...")
             try:
-                graph = deserialize(graph_header, graph_frames).data
+                graph = merge_and_deserialize(graph_header, graph_frames).data
                 del graph_header, graph_frames
             except Exception as e:
                 msg = """\
