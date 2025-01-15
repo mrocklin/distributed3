@@ -381,13 +381,16 @@ class SpecCluster(Cluster):
             if workers:
                 worker_futs = [asyncio.ensure_future(w) for w in workers]
                 await asyncio.wait(worker_futs)
-                self.workers.update(dict(zip(to_open, workers)))
                 for w in workers:
                     w._cluster = weakref.ref(self)
                 # Collect exceptions from failed workers. This must happen after all
                 # *other* workers have finished initialising, so that we can have a
                 # proper teardown.
                 await asyncio.gather(*worker_futs)
+                # And remember the new workers, note this doesn't
+                # handle partial failure since the gather above would
+                # raise in that case. See also #5919.
+                self.workers.update(dict(zip(to_open, workers)))
 
     def _update_worker_status(self, op, msg):
         if op == "remove":

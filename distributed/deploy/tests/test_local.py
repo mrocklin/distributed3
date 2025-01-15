@@ -1301,6 +1301,26 @@ def test_localcluster_start_exception(loop):
             pass
 
 
+def test_localcluster_scale_exception(loop):
+    with raises_with_cause(
+        RuntimeError,
+        "Nanny failed to start",
+        RuntimeError,
+        "Worker failed to start",
+        ImportError,
+        "my_nonexistent_library",
+    ):
+        with LocalCluster(
+            n_workers=0,
+            threads_per_worker=1,
+            processes=True,
+            plugins={MyPlugin()},
+            loop=loop,
+        ) as cluster:
+            cluster.scale(1)
+            cluster.sync(cluster._correct_state)
+
+
 def test_localcluster_get_client(loop):
     with LocalCluster(
         n_workers=0, asynchronous=False, dashboard_address=":0", loop=loop
