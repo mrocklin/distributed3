@@ -75,9 +75,9 @@ def dumps(x, *, buffer_callback=None, protocol=HIGHEST_PROTOCOL):
         try:
             buffers.clear()
             result = cloudpickle.dumps(x, **dump_kwargs)
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to serialize %s.", x)
-            raise
+            raise pickle.PicklingError("Failed to serialize", x, buffers) from e
     if buffer_callback is not None:
         for b in buffers:
             buffer_callback(b)
@@ -90,6 +90,8 @@ def loads(x, *, buffers=()):
             return pickle.loads(x, buffers=buffers)
         else:
             return pickle.loads(x)
-    except Exception:
-        logger.info("Failed to deserialize %s", x[:10000], exc_info=True)
+    except EOFError:
         raise
+    except Exception as e:
+        logger.info("Failed to deserialize %s", x[:10000], exc_info=True)
+        raise pickle.UnpicklingError("Failed to deserialize", x, buffers) from e

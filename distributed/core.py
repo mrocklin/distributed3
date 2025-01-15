@@ -6,6 +6,7 @@ import inspect
 import logging
 import math
 import os
+import pickle
 import sys
 import tempfile
 import threading
@@ -1719,6 +1720,8 @@ def clean_exception(
     if isinstance(exception, (bytes, bytearray)):
         try:
             exception = protocol.pickle.loads(exception)
+        except pickle.UnpicklingError as e:
+            exception = e
         except Exception:
             exception = Exception(exception)
     elif isinstance(exception, str):

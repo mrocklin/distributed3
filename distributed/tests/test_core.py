@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import pickle
 import random
 import socket
 import sys
@@ -165,6 +166,16 @@ async def test_server_raises_on_blocked_handlers():
         assert "'ping' handler has been explicitly disallowed" in repr(exception)
 
         await comm.close()
+
+
+@gen_test()
+async def test_unreadable_exception_in_clean_exception():
+    pickled_ex = b"\x80\x04\x954\x00\x00\x00\x00\x00\x00\x00\x8c\x08__main__\x94\x8c\x14SomeUnknownException\x94\x93\x94\x8c\x08some arg\x94\x85\x94R\x94."
+    ex_type, ex, tb = clean_exception(pickled_ex)
+    assert ex_type == pickle.UnpicklingError
+    assert isinstance(ex, pickle.UnpicklingError)
+    assert ex.args[1] == pickled_ex
+    assert tb is None
 
 
 class MyServer(Server):

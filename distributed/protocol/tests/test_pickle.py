@@ -15,7 +15,7 @@ from distributed import profile
 from distributed.protocol import deserialize, serialize
 from distributed.protocol.pickle import HIGHEST_PROTOCOL, dumps, loads
 from distributed.protocol.serialize import dask_deserialize, dask_serialize
-from distributed.utils_test import popen, save_sys_modules
+from distributed.utils_test import popen, raises_with_cause, save_sys_modules
 
 
 class MemoryviewHolder:
@@ -231,7 +231,7 @@ def _deserialize_nopickle(header, frames):
 
 
 def test_allow_pickle_if_registered_in_dask_serialize():
-    with pytest.raises(TypeError, match="nope"):
+    with raises_with_cause(pickle.PicklingError, "serialize", TypeError, "nope"):
         dumps(NoPickle())
 
     dask_serialize.register(NoPickle)(_serialize_nopickle)
@@ -251,9 +251,9 @@ class NestedNoPickle:
 
 def test_nopickle_nested():
     nested_obj = [NoPickle()]
-    with pytest.raises(TypeError, match="nope"):
+    with raises_with_cause(pickle.PicklingError, "serialize", TypeError, "nope"):
         dumps(nested_obj)
-    with pytest.raises(TypeError, match="nope"):
+    with raises_with_cause(pickle.PicklingError, "serialize", TypeError, "nope"):
         dumps(NestedNoPickle())
 
     dask_serialize.register(NoPickle)(_serialize_nopickle)

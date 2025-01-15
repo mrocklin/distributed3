@@ -70,6 +70,8 @@ async def test_work_stealing(c, s, a, b):
     await wait(futures)
     assert len(a.data) > 10
     assert len(b.data) > 10
+    del futures
+    print("Hi")
 
 
 @gen_cluster(client=True, nthreads=[("127.0.0.1", 1)] * 2)

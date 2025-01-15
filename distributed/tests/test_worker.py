@@ -6,6 +6,7 @@ import importlib
 import itertools
 import logging
 import os
+import pickle
 import random
 import sys
 import tempfile
@@ -38,6 +39,7 @@ from distributed import (
     get_client,
     get_worker,
     profile,
+    protocol,
     wait,
 )
 from distributed.comm.registry import backends
@@ -46,7 +48,6 @@ from distributed.compatibility import LINUX, WINDOWS
 from distributed.core import CommClosedError, Status, rpc
 from distributed.diagnostics.plugin import ForwardOutput
 from distributed.metrics import time
-from distributed.protocol import pickle
 from distributed.scheduler import KilledWorker, Scheduler
 from distributed.utils import get_mp_context, wait_for
 from distributed.utils_test import (
@@ -509,13 +510,15 @@ async def test_plugin_internal_exception():
         with raises_with_cause(
             RuntimeError,
             "Worker failed to start",
+            pickle.UnpicklingError,
+            "deserialize",
             UnicodeDecodeError,
-            match_cause="codec can't decode",
+            "codec can't decode",
         ):
             async with Worker(
                 s.address,
                 plugins={
-                    b"corrupting pickle" + pickle.dumps(lambda: None),
+                    b"corrupting pickle" + protocol.pickle.dumps(lambda: None),
                 },
             ) as w:
                 pass

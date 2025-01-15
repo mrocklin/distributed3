@@ -222,7 +222,7 @@ def test_spillbuffer_fail_to_serialize(tmp_path):
     with pytest.raises(TypeError, match="Failed to pickle 'a'") as e:
         with captured_logger("distributed.spill") as logs_bad_key:
             buf["a"] = a
-    assert isinstance(e.value.__cause__.__cause__, MyError)
+    assert isinstance(e.value.__cause__.__cause__.__cause__, MyError)
 
     # spill.py must remain silent because we're already logging in worker.py
     assert not logs_bad_key.getvalue()
