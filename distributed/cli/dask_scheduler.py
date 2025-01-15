@@ -20,6 +20,7 @@ from distributed.proctitle import (
     enable_proctitle_on_children,
     enable_proctitle_on_current,
 )
+from distributed.scheduler import DEFAULT_SCHEDULER_PORT
 
 logger = logging.getLogger("distributed.scheduler")
 
@@ -165,9 +166,9 @@ def main(
 
     if port is None and (not host or not re.search(r":\d", host)):
         if isinstance(protocol, list):
-            port = [8786] + [0] * (len(protocol) - 1)
+            port = [DEFAULT_SCHEDULER_PORT] + [0] * (len(protocol) - 1)
         else:
-            port = 8786
+            port = DEFAULT_SCHEDULER_PORT
 
     if isinstance(protocol, list) or isinstance(port, list):
         if (not isinstance(protocol, list) or not isinstance(port, list)) or len(

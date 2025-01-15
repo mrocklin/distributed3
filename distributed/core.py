@@ -720,13 +720,32 @@ class Server:
         else:
             addr = port_or_addr
             assert isinstance(addr, str)
-        listener = await listen(
-            addr,
-            self.handle_comm,
-            deserialize=self.deserialize,
-            allow_offload=allow_offload,
-            **kwargs,
-        )
+        try:
+            listener = await listen(
+                addr,
+                self.handle_comm,
+                deserialize=self.deserialize,
+                allow_offload=allow_offload,
+                **kwargs,
+            )
+        except OSError:
+            fallback_port_or_addr = kwargs.get("fallback_port_or_addr", None)
+            if not fallback_port_or_addr:
+                raise
+            warnings.warn(
+                f"Address {addr} is already in use.\n"
+                f"Falling back to {fallback_port_or_addr} instead",
+                UserWarning,
+                stacklevel=2,
+            )
+            listener = await listen(
+                fallback_port_or_addr,
+                self.handle_comm,
+                deserialize=self.deserialize,
+                allow_offload=allow_offload,
+                **kwargs,
+            )
+
         self.listeners.append(listener)
 
     def handle_comm(self, comm: Comm) -> NoOpAwaitable:

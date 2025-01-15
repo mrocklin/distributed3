@@ -59,6 +59,7 @@ from distributed.nanny import Nanny
 from distributed.node import ServerNode
 from distributed.proctitle import enable_proctitle_on_children
 from distributed.protocol import deserialize
+from distributed.scheduler import DEFAULT_SCHEDULER_PORT
 from distributed.scheduler import TaskState as SchedulerTaskState
 from distributed.security import Security
 from distributed.utils import (
@@ -2482,7 +2483,7 @@ def requires_default_ports(name_of_test):
             s.listen(1)
             yield s
 
-    default_ports = [8786]
+    default_ports = [DEFAULT_SCHEDULER_PORT]
 
     while time() - start < _TEST_TIMEOUT:
         try:

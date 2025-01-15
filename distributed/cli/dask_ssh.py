@@ -8,6 +8,7 @@ from textwrap import dedent
 import click
 
 from distributed.deploy.old_ssh import SSHCluster
+from distributed.scheduler import DEFAULT_SCHEDULER_PORT
 
 logger = logging.getLogger("distributed.dask_ssh")
 
@@ -30,7 +31,7 @@ logger = logging.getLogger("distributed.dask_ssh")
 )
 @click.option(
     "--scheduler-port",
-    default=8786,
+    default=DEFAULT_SCHEDULER_PORT,
     show_default=True,
     type=int,
     help="Specify scheduler port number.",

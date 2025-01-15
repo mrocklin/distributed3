@@ -123,7 +123,7 @@ class LocalCluster(SpecCluster):
         start=None,
         host=None,
         ip=None,
-        scheduler_port=0,
+        scheduler_port=None,
         silence_logs=logging.WARN,
         dashboard_address=":8787",
         worker_dashboard_address=None,

@@ -193,6 +193,8 @@ DEFAULT_EXTENSIONS = {
     "stealing": WorkStealing,
 }
 
+DEFAULT_SCHEDULER_PORT = 8786
+
 
 class ClientState:
     """A simple object holding information about a client."""
@@ -3674,7 +3676,6 @@ class Scheduler(SchedulerState, ServerNode):
         Time we expect certain functions to take, e.g. ``{'sum': 0.25}``
     """
 
-    default_port = 8786
     _instances: ClassVar[weakref.WeakSet[Scheduler]] = weakref.WeakSet()
 
     worker_ttl: float | None
@@ -3785,8 +3786,18 @@ class Scheduler(SchedulerState, ServerNode):
             interface=interface,
             protocol=protocol,
             security=security,
-            default_port=self.default_port,
+            default_port=DEFAULT_SCHEDULER_PORT,
         )
+        if port is None:
+            self._fallback_start_addresses = addresses_from_user_args(
+                host=host,
+                port=0,
+                interface=interface,
+                protocol=protocol,
+                security=security,
+            )
+        else:
+            self._fallback_start_addresses = []
 
         http_server_modules = dask.config.get("distributed.scheduler.http.routes")
         show_dashboard = dashboard or (dashboard is None and dashboard_address)
@@ -4199,11 +4210,14 @@ class Scheduler(SchedulerState, ServerNode):
 
         self._clear_task_state()
 
-        for addr in self._start_address:
+        for addr, fallback_addr in itertools.zip_longest(
+            self._start_address, self._fallback_start_addresses
+        ):
             await self.listen(
                 addr,
                 allow_offload=False,
                 handshake_overrides={"pickle-protocol": 4, "compression": None},
+                fallback_port_or_addr=fallback_addr,
                 **self.security.get_listen_args("scheduler"),
             )
             self.ip = get_address_host(self.listen_address)
