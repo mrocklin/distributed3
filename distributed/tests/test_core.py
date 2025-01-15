@@ -25,6 +25,7 @@ from distributed.core import (
     RPCClosed,
     Server,
     Status,
+    UnreadablePickledException,
     _expects_comm,
     clean_exception,
     coerce_to_address,
@@ -1405,3 +1406,13 @@ async def test_large_payload(caplog):
 
         assert response["result"] == data
         await comm.close()
+
+
+@gen_test()
+async def test_unreadable_pickled_exceptions_kept():
+    pickled_ex = b"\x80\x04\x954\x00\x00\x00\x00\x00\x00\x00\x8c\x08__main__\x94\x8c\x14SomeUnknownException\x94\x93\x94\x8c\x08some arg\x94\x85\x94R\x94."
+    ex_type, ex, tb = clean_exception(pickled_ex)
+    assert ex_type == UnreadablePickledException
+    assert isinstance(ex, UnreadablePickledException)
+    assert ex.args[0] == pickled_ex
+    assert tb is None
