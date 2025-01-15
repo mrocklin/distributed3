@@ -365,6 +365,15 @@ class Server:
         self._tick_counter = 0
         self._last_tick_counter = 0
         self._last_tick_cycle = time()
+        self._tick_retention = parse_timedelta(
+            dask.config.get("distributed.admin.tick.retention")
+        )
+        self._observed_tick_durations = deque(
+            maxlen=int(
+                self._tick_retention
+                / parse_timedelta(dask.config.get("distributed.admin.tick.interval"))
+            )
+        )
         self._tick_interval = parse_timedelta(
             dask.config.get("distributed.admin.tick.interval"), default="ms"
         )
@@ -614,6 +623,13 @@ class Server:
                 tick_duration,
             )
         self.digest_metric("tick-duration", tick_duration)
+        self._observed_tick_durations.append((now, tick_duration))
+        threshold = now - self._tick_retention
+        while (
+            self._observed_tick_durations
+            and self._observed_tick_durations[0][0] < threshold
+        ):
+            self._observed_tick_durations.popleft()
 
     def _cycle_ticks(self):
         if not self._tick_counter:
@@ -957,8 +973,6 @@ class Server:
         self.digests_total[name] += value
         # Cumulative data sent to scheduler and reset on heartbeat
         self.digests_total_since_heartbeat[name] += value
-        # Local maximums (reset by Prometheus poll)
-        self.digests_max[name] = max(self.digests_max[name], value)
 
 
 def context_meter_to_server_digest(digest_tag: str) -> Callable:

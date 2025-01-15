@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from time import time
 
 import prometheus_client
 import toolz
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
+from toolz.itertoolz import pluck
 
 from distributed.core import Status
 from distributed.gc import gc_collect_duration
@@ -13,6 +13,7 @@ from distributed.http.prometheus import PrometheusCollector
 from distributed.http.scheduler.prometheus.semaphore import SemaphoreMetricCollector
 from distributed.http.scheduler.prometheus.stealing import WorkStealingMetricCollector
 from distributed.http.utils import RequestHandler
+from distributed.metrics import time
 from distributed.scheduler import ALL_TASK_STATES, Scheduler
 
 
@@ -194,15 +195,13 @@ class SchedulerMetricCollector(PrometheusCollector):
                 prefix_state_counts.add_metric([tp.name, state], count)
         yield prefix_state_counts
 
+        observations = self.server._observed_tick_durations or [(None, 0)]
         now = time()
-        max_tick_duration = max(
-            self.server.digests_max["tick_duration"],
-            now - self.server._last_tick,
-        )
+        since_last_tick = now - self.server._last_tick
         yield GaugeMetricFamily(
             self.build_name("tick_duration_maximum_seconds"),
-            "Maximum tick duration observed since Prometheus last scraped metrics",
-            value=max_tick_duration,
+            "Maximum tick duration observed during the tick retention window",
+            value=max(max(pluck(1, observations)), since_last_tick),
         )
 
         yield CounterMetricFamily(
@@ -210,8 +209,6 @@ class SchedulerMetricCollector(PrometheusCollector):
             "Total number of ticks observed since the server started",
             value=self.server._tick_counter,
         )
-
-        self.server.digests_max.clear()
 
 
 COLLECTORS = [

@@ -1198,6 +1198,9 @@ properties:
               cycle :
                 type: string
                 description: The time in between verifying event loop speed
+              retention :
+                type: string
+                description: Store accurate values for this long
 
           max-error-length:
             type: integer
