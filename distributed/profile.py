@@ -30,6 +30,7 @@ from __future__ import annotations
 import bisect
 import dis
 import linecache
+import os
 import sys
 import threading
 from collections import defaultdict, deque
@@ -127,12 +128,20 @@ def info_frame(frame: FrameType) -> dict[str, Any]:
     }
 
 
+_skip_default = (
+    os.path.join("concurrent", "futures", "_base.py"),
+    "threading.py",
+    os.path.join("distributed", "utils.py"),
+)
+
+
 def process(
     frame: FrameType,
     child: object | None,
     state: dict[str, Any],
     *,
     stop: str | None = None,
+    skip: Collection[str] = _skip_default,
     omit: Collection[str] = (),
     depth: int | None = None,
 ) -> dict[str, Any] | None:
@@ -186,6 +195,7 @@ def process(
         return None
 
     prev = frame.f_back
+
     if (
         depth > 0
         and prev is not None
@@ -195,6 +205,9 @@ def process(
         if new_state is None:
             return None
         state = new_state
+
+    if any(frame.f_code.co_filename.endswith(s) for s in skip):
+        return state
 
     ident = identifier(frame)
 
