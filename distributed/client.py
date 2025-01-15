@@ -4005,6 +4005,11 @@ class Client(SyncMethodMixin):
         This directory will be added to the Python's system path so any ``.py``,
         ``.egg`` or ``.zip``  files will be importable.
 
+        We recommend using :class:`distributed.diagnostics.plugin.UploadFile`
+        or :class:`distributed.diagnostics.plugin.UploadDirectory` when using
+        a dynamic cluster, to ensure that files are provided to new workers
+        as they join.
+
         Parameters
         ----------
         filename : string
@@ -4012,6 +4017,14 @@ class Client(SyncMethodMixin):
         load : bool, optional
             Whether or not to import the module as part of the upload process.
             Defaults to ``True``.
+
+        See Also
+        --------
+        distributed.diagnostics.plugin.UploadFile : A worker plugin to
+            automatically upload a file when workers join the cluster. 
+        distributed.diagnostics.plugin.UploadDirectory : A worker plugin to
+            automatically upload a directory of files when workers join the
+            cluster.
 
         Examples
         --------
