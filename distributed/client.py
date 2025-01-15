@@ -38,7 +38,7 @@ from typing import (
 )
 
 from packaging.version import parse as parse_version
-from tlz import first, groupby, merge, partition_all, valmap
+from tlz import first, groupby, merge, valmap
 
 import dask
 from dask.base import collections_to_dsk
@@ -2294,34 +2294,9 @@ class Client(SyncMethodMixin):
             )
         total_length = sum(len(x) for x in iterables)
         if batch_size and batch_size > 1 and total_length > batch_size:
-            batches = list(
-                zip(*(partition_all(batch_size, iterable) for iterable in iterables))
-            )
-            keys: list[list[Any]] | list[Any]
-            if isinstance(key, list):
-                keys = [list(element) for element in partition_all(batch_size, key)]
-            else:
-                keys = [key for _ in range(len(batches))]
-            return sum(
-                (
-                    self.map(
-                        func,
-                        *batch,
-                        key=key,
-                        workers=workers,
-                        retries=retries,
-                        priority=priority,
-                        allow_other_workers=allow_other_workers,
-                        fifo_timeout=fifo_timeout,
-                        resources=resources,
-                        actor=actor,
-                        actors=actors,
-                        pure=pure,
-                        **kwargs,
-                    )
-                    for key, batch in zip(keys, batches)
-                ),
-                [],
+            warnings.warn(
+                'The argument "batch_size" is ignored and will be removed in a future version.',
+                DeprecationWarning,
             )
 
         key = key or funcname(func)

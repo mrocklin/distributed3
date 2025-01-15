@@ -242,16 +242,20 @@ async def test_map_retries(c, s, a, b):
 
 @gen_cluster(client=True)
 async def test_map_batch_size(c, s, a, b):
-    result = c.map(inc, range(100), batch_size=10)
+    with pytest.deprecated_call(match="batch_size"):
+        result = c.map(inc, range(100), batch_size=10)
     result = await c.gather(result)
     assert result == list(range(1, 101))
 
-    result = c.map(add, range(100), range(100), batch_size=10)
+    with pytest.deprecated_call(match="batch_size"):
+        result = c.map(add, range(100), range(100), batch_size=10)
     result = await c.gather(result)
     assert result == list(range(0, 200, 2))
 
     # mismatch shape
-    result = c.map(add, range(100, 200), range(10), batch_size=2)
+
+    with pytest.deprecated_call(match="batch_size"):
+        result = c.map(add, range(100, 200), range(10), batch_size=2)
     result = await c.gather(result)
     assert result == list(range(100, 120, 2))
 
@@ -260,12 +264,13 @@ async def test_map_batch_size(c, s, a, b):
 async def test_custom_key_with_batches(c, s, a, b):
     """Test of <https://github.com/dask/distributed/issues/4588>"""
 
-    futs = c.map(
-        lambda x: x**2,
-        range(10),
-        batch_size=5,
-        key=[str(x) for x in range(10)],
-    )
+    with pytest.deprecated_call(match="batch_size"):
+        futs = c.map(
+            lambda x: x**2,
+            range(10),
+            batch_size=5,
+            key=[str(x) for x in range(10)],
+        )
     assert len(futs) == 10
     await wait(futs)
 
