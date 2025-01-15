@@ -35,6 +35,23 @@ def test_grad(requires_grad):
         assert np.allclose(t2.grad.numpy(), 1)
 
 
+@pytest.mark.gpu
+def test_grad_gpu():
+    x = np.arange(10)
+    t = torch.tensor(x, dtype=torch.float, requires_grad=True).to(
+        torch.device("cuda:0")
+    )
+
+    t.grad = torch.zeros_like(t) + 1
+
+    t2 = deserialize(*serialize(t))
+
+    assert t2.requires_grad
+    assert t.requires_grad
+    assert np.allclose(t2.detach().numpy(), x)
+    assert np.allclose(t2.grad.numpy(), 1)
+
+
 def test_resnet():
     torchvision = pytest.importorskip("torchvision")
     model = torchvision.models.resnet.resnet18()

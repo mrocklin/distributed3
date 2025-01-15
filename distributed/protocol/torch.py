@@ -16,13 +16,13 @@ def serialize_torch_Tensor(t):
     requires_grad_ = t.requires_grad
 
     if requires_grad_:
-        sub_header, frames = serialize(t.detach().numpy())
+        sub_header, frames = serialize(t.detach().cpu().numpy())
     else:
-        sub_header, frames = serialize(t.numpy())
+        sub_header, frames = serialize(t.cpu().numpy())
 
     header = {"sub-header": sub_header}
     if t.grad is not None:
-        grad_header, grad_frames = serialize(t.grad.numpy())
+        grad_header, grad_frames = serialize(t.grad.cpu().numpy())
         header["grad"] = {"header": grad_header, "start": len(frames)}
         frames += grad_frames
     header["requires_grad"] = requires_grad_
