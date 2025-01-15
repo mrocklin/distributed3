@@ -211,6 +211,11 @@ pem_file_option_type = click.Path(exists=True, resolve_path=True)
     "This assumes that you are using the --lifetime and --nanny keywords",
 )
 @click.option(
+    "--drain/--no-drain",
+    default=False,
+    help="Let the worker finish its current work before closing [default: --no-drain]",
+)
+@click.option(
     "--preload",
     type=str,
     multiple=True,

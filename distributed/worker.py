@@ -402,6 +402,9 @@ class Worker(BaseWorker, ServerNode):
     lifetime_restart: bool
         Whether or not to restart a worker after it has reached its lifetime
         Default False
+    drain: bool
+        The worker is allowed to complete its assigned worker before closing.
+        Default False.
     kwargs: optional
         Additional parameters to ServerNode constructor
 
@@ -528,6 +531,7 @@ class Worker(BaseWorker, ServerNode):
         lifetime: Any | None = None,
         lifetime_stagger: Any | None = None,
         lifetime_restart: bool | None = None,
+        drain: bool = False,
         transition_counter_max: int | Literal[False] = False,
         ###################################
         # Parameters to WorkerMemoryManager
@@ -858,6 +862,8 @@ class Worker(BaseWorker, ServerNode):
                 lifetime, self.close_gracefully, reason="worker-lifetime-reached"
             )
         self.lifetime = lifetime
+
+        self.drain = drain
 
         Worker._instances.add(self)
 
@@ -1685,13 +1691,30 @@ class Worker(BaseWorker, ServerNode):
         This first informs the scheduler that we're shutting down, and asks it
         to move our data elsewhere. Afterwards, we close as normal
         """
+        # `drain` mode waits for all tasks to finish before closing
+        # otherwise, we close immediately and unfinished tasks will be rescheduled or cancelled
+
         if self.status in (Status.closing, Status.closing_gracefully):
             await self.finished()
+        await self.scheduler.retire_workers(
+            workers=[self.address],
+            close_workers=False,
+            remove=False,
+            stimulus_id=f"worker-drain-{time()}",
+        )
+        if self.drain:
+            logger.warning(
+                f"Draining worker, waiting on {len(self.state.all_running_tasks)} tasks."
+            )
+            while len(self.state.all_running_tasks):
+                await asyncio.sleep(0.1)
+            logger.warning("Draining has finished.")
 
         if self.status == Status.closed:
             return
 
         logger.info("Closing worker gracefully: %s. Reason: %s", self.address, reason)
+
         # Wait for all tasks to leave the worker and don't accept any new ones.
         # Scheduler.retire_workers will set the status to closing_gracefully and push it
         # back to this worker.
@@ -1703,6 +1726,7 @@ class Worker(BaseWorker, ServerNode):
         )
         if restart is None:
             restart = self.lifetime_restart
+
         await self.close(nanny=not restart, reason=reason)
 
     async def wait_until_closed(self):
