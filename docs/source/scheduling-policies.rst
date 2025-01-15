@@ -60,7 +60,8 @@ Instead, we use the task's TaskGroup, which is the collection of all tasks with 
 same key prefix. (``(random-a1b2c3, 0)``, ``(random-a1b2c3, 1)``, ``(random-a1b2c3, 2)``
 would all belong to the TaskGroup ``random-a1b2c3``.)
 
-To identify the root(ish) tasks, we use this heuristic:
+To identify the root(ish) tasks, we check whether the task has been explicitly marked as
+(non-)rootish. If this is not the case, we use this heuristic:
 
 1.  The TaskGroup has 2x more tasks than there are threads in the cluster
 2.  The TaskGroup has fewer than 5 unique dependencies across *all* tasks in the group.
@@ -129,13 +130,6 @@ functions in ``scheduler.py``.
 .. currentmodule:: distributed.scheduler
 
 .. autosummary:: decide_worker
-
-.. autosummary:: Scheduler.decide_worker_non_rootish
-
-.. autosummary:: Scheduler.decide_worker_rootish_queuing_disabled
-
-.. autosummary:: Scheduler.decide_worker_rootish_queuing_enabled
-
 .. autosummary:: Scheduler.worker_objective
 
 
