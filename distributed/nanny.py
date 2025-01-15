@@ -240,6 +240,7 @@ class Nanny(ServerNode):
             # https://github.com/dask/dask/issues/6640.
             self.pre_spawn_env.update({"PYTHONHASHSEED": "6640"})
 
+
         self.env = merge(
             self.pre_spawn_env,
             _get_env_variables("distributed.nanny.environ"),
@@ -1032,4 +1033,9 @@ def _get_env_variables(config_key: str) -> dict[str, str]:
     # Override dask config with explicitly defined env variables from the OS
     # Allow unsetting a variable in a config override by setting its value to None.
     cfg = {k: os.environ.get(k, str(v)) for k, v in cfg.items() if v is not None}
+
+    for k, v in list(cfg.items()):
+        if "_NUM_THREADS" in k and not v:
+            del cfg[k]
+
     return cfg

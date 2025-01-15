@@ -312,6 +312,19 @@ async def test_environment_variable(c, s):
     await asyncio.gather(a.close(), b.close())
 
 
+@gen_cluster(
+    nthreads=[("", 1)],
+    client=True,
+    Worker=Nanny,
+    config={
+        "distributed.nanny.pre-spawn-environ": {"OMP_NUM_THREADS": ""},
+    },
+)
+async def test_omp_num_threads_off(c, s, a):
+    results = await c.run(lambda: "OMP_NUM_THREADS" in os.environ)
+    assert results == {a.worker_address: False}
+
+
 @gen_cluster(nthreads=[], client=True)
 async def test_environment_variable_by_config(c, s, monkeypatch):
     with dask.config.set({"distributed.nanny.environ": "456"}):
