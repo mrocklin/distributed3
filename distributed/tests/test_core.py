@@ -36,7 +36,7 @@ from distributed.core import (
 from distributed.metrics import time
 from distributed.protocol import to_serialize
 from distributed.protocol.compression import compressions
-from distributed.utils import get_ip, get_ipv6, wait_for
+from distributed.utils import get_ip, get_ipv6, open_port, wait_for
 from distributed.utils_test import (
     assert_can_connect,
     assert_can_connect_from_everywhere_4,
@@ -1050,7 +1050,7 @@ async def test_close_properly():
 
     server = await Server({"sleep": sleep})
     assert server.status == Status.running
-    ports = [8881, 8882, 8883]
+    ports = [open_port() for _ in range(3)]
 
     # Previously we close *one* listener, therefore ensure we always use more
     # than one for this test

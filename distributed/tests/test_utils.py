@@ -1092,3 +1092,44 @@ def test_tuple_comparable_eq(obj1, obj2, expected):
 def test_tuple_comparable_error():
     with pytest.raises(ValueError):
         TupleComparable("string")
+
+
+@gen_test()
+async def test_wait_for():
+    # See https://github.com/python/cpython/issues/86296#issuecomment-1281339374
+    import asyncio
+
+    from distributed.utils import wait_for
+
+    async def left(tasks, event):
+        me = asyncio.current_task()
+        assert tasks[0] is me
+        await asyncio.sleep(0.1)
+        event.set()
+        tasks[1].cancel()
+
+    not_cancelled = False
+
+    async def right(tasks, event, use_wait_for):
+        nonlocal not_cancelled
+        try:
+            me = asyncio.current_task()
+            assert tasks[1] is me
+            if use_wait_for:
+                await wait_for(event.wait(), 1)
+            else:
+                await event.wait()
+            not_cancelled = True
+        except asyncio.CancelledError:
+            raise
+
+    async def left_right(use_wait_for):
+        tasks = []
+        event = asyncio.Event()
+        tasks.append(asyncio.create_task(left(tasks, event)))
+        tasks.append(asyncio.create_task(right(tasks, event, use_wait_for)))
+        await asyncio.wait(tasks)
+
+    await left_right(False)
+    await left_right(True)
+    assert not not_cancelled

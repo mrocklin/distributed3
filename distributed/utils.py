@@ -1905,14 +1905,33 @@ class RateLimiterFilter(logging.Filter):
 
 if sys.version_info >= (3, 11):
 
-    async def wait_for(fut: Awaitable[T], timeout: float) -> T:
+    async def wait_for(fut: Awaitable[T], timeout: float | None) -> T:
         async with asyncio.timeout(timeout):
             return await fut
 
 else:
 
-    async def wait_for(fut: Awaitable[T], timeout: float) -> T:
-        return await asyncio.wait_for(fut, timeout)
+    async def wait_for(fut: Awaitable[T], timeout: float | None) -> T:
+        if timeout is None:
+            return await fut
+        fut = asyncio.ensure_future(fut)
+        done = asyncio.Event()
+        fut.add_done_callback(lambda _: done.set())
+        sl = asyncio.create_task(asyncio.sleep(timeout))
+        for aw in asyncio.as_completed([done.wait(), sl]):
+            await aw
+            if not done.is_set():
+                fut.cancel()
+                try:
+                    raise asyncio.TimeoutError()
+                finally:
+                    try:
+                        await fut
+                    except asyncio.CancelledError:
+                        pass
+            sl.cancel()
+            return fut.result()
+        raise RuntimeError("Unreachable")
 
 
 class TupleComparable:
