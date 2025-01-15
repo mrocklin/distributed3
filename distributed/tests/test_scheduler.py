@@ -509,8 +509,7 @@ async def test_queued_paused_new_worker(c, s, a, b):
         # wait for workers pausing to hit the scheduler
         await asyncio.sleep(0.01)
 
-    assert not s.idle
-    assert not s.idle_task_count
+    assert all(ws.processing for ws in s.workers.values())
     assert not s.running
 
     async with Worker(s.address, nthreads=2) as w:
@@ -558,8 +557,7 @@ async def test_queued_paused_unpaused(c, s, a, b, queue):
         await asyncio.sleep(0.01)
 
     assert not s.running
-    assert not s.idle
-    assert not s.idle_task_count
+    assert all(ws.processing for ws in s.workers.values())
 
     # un-pause
     a.status = Status.running
@@ -568,9 +566,7 @@ async def test_queued_paused_unpaused(c, s, a, b, queue):
         await asyncio.sleep(0.01)
 
     if queue:
-        assert not s.idle  # workers should have been (or already were) filled
-        # If queuing is disabled, all workers might already be saturated when they un-pause.
-        assert not s.idle_task_count
+        assert all(ws.processing for ws in s.workers.values())
 
     await wait(final)
 
