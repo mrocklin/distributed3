@@ -270,7 +270,7 @@ jobs:
           always() &&
           (steps.run_tests.outcome == 'success' || steps.run_tests.outcome == 'failure') &&
           github.event_name != 'schedule'
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           name: ${{ env.TEST_ID }}
           # See https://community.codecov.com/t/upload-issues-unable-to-locate-build-via-github-actions-api/3954
