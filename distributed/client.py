@@ -2084,8 +2084,9 @@ class Client(SyncMethodMixin):
             requires on the worker; e.g. ``{'GPU': 2}``.
             See :doc:`worker resources <resources>` for details on defining
             resources.
-        retries : int (default to 0)
-            Number of allowed automatic retries if the task fails
+        retries : int or None (default to None)
+            Number of allowed automatic retries if the task fails. The default
+            value is `None`, which will not trigger any retries for the task.
         priority : Number
             Optional prioritization of task.  Zero is default.
             Higher priorities take precedence
