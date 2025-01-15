@@ -16,6 +16,7 @@ from dask.utils import _deprecated, format_bytes, parse_timedelta, typename
 from dask.widgets import get_template
 
 from distributed.compatibility import PeriodicCallback
+from distributed.config import ensure_logging_configured
 from distributed.core import Status
 from distributed.deploy.adaptive import Adaptive
 from distributed.metrics import time
@@ -67,6 +68,7 @@ class Cluster(SyncMethodMixin):
         name=None,
         scheduler_sync_interval=1,
     ):
+        ensure_logging_configured()
         self._loop_runner = LoopRunner(loop=loop, asynchronous=asynchronous)
         self.__asynchronous = asynchronous
 

@@ -84,6 +84,8 @@ def test_logging_simple_under_distributed():
             import logging
             import dask
 
+            from distributed.config import ensure_logging_configured
+            ensure_logging_configured()
             from distributed.utils_test import captured_handler
 
             d = logging.getLogger('distributed')
@@ -116,6 +118,8 @@ def test_logging_simple():
             import logging
             import dask
 
+            from distributed.config import ensure_logging_configured
+            ensure_logging_configured()
             from distributed.utils_test import captured_handler
 
             d = logging.getLogger('distributed')
@@ -172,6 +176,8 @@ def test_logging_extended():
         code = """if 1:
             import logging
 
+            from distributed.config import ensure_logging_configured
+            ensure_logging_configured()
             from distributed.utils_test import captured_handler
 
             root = logging.getLogger()
@@ -205,6 +211,8 @@ def test_default_logging_does_not_override_basic_config():
         import logging
         logging.basicConfig()
         import distributed
+        from distributed.config import ensure_logging_configured
+        ensure_logging_configured()
         logging.getLogger("distributed").warning("hello")
         """
     )
@@ -220,7 +228,8 @@ def test_basic_config_does_not_override_default_logging():
         """\
         import logging
         import distributed
-
+        from distributed.config import ensure_logging_configured
+        ensure_logging_configured()
         logging.basicConfig()
         logging.getLogger("distributed").warning("hello")
         """
@@ -287,7 +296,8 @@ qualname=foo.bar
     with new_config_file(dask_config):
         code = """if 1:
             import logging
-            from distributed import config
+            from distributed.config import ensure_logging_configured
+            ensure_logging_configured()
             foo = logging.getLogger('foo')
             bar = logging.getLogger('foo.bar')
             assert logging.INFO == foo.getEffectiveLevel()

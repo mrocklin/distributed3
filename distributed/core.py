@@ -47,6 +47,7 @@ from distributed.comm import (
 )
 from distributed.comm.core import Listener
 from distributed.compatibility import PeriodicCallback
+from distributed.config import ensure_logging_configured
 from distributed.counter import Counter
 from distributed.diskutils import WorkDir, WorkSpace
 from distributed.metrics import context_meter, time
@@ -511,6 +512,7 @@ class Server:
 
     @final
     async def start(self):
+        ensure_logging_configured()
         async with self._startup_lock:
             if self.status == Status.failed:
                 assert self.__startup_exc is not None

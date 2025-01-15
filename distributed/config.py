@@ -4,6 +4,7 @@ import asyncio
 import logging.config
 import os
 import sys
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -214,4 +215,13 @@ def get_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
     )
 
 
-initialize_logging(dask.config.config)
+_LOGGING_CONFIGURED = False
+_LOG_CONFIGURE_LOCK = threading.Lock()
+
+
+def ensure_logging_configured() -> None:
+    global _LOGGING_CONFIGURED
+    with _LOG_CONFIGURE_LOCK:
+        if not _LOGGING_CONFIGURED:
+            _LOGGING_CONFIGURED = True
+            initialize_logging(dask.config.config)

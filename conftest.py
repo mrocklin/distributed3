@@ -18,6 +18,10 @@ else:
     except Exception:
         pass
 
+from distributed.config import ensure_logging_configured
+
+ensure_logging_configured()
+
 # Make all fixtures available
 from distributed.utils_test import *  # noqa
 

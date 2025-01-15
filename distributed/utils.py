@@ -55,7 +55,7 @@ import tblib.pickling_support
 from tornado import escape
 
 from distributed.compatibility import asyncio_run
-from distributed.config import get_loop_factory
+from distributed.config import ensure_logging_configured, get_loop_factory
 
 try:
     import resource
@@ -866,6 +866,7 @@ def silence_logging_cmgr(
     """
     Temporarily change all StreamHandlers for the given logger to the given level
     """
+    ensure_logging_configured()
     if isinstance(level, str):
         level = getattr(logging, level.upper())
 
