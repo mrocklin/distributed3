@@ -40,6 +40,7 @@ class SystemMonitor:
         self,
         maxlen: int | None | NoDefault = no_default,
         monitor_disk_io: bool | None = None,
+        monitor_gpu: bool | None = None,
         monitor_host_cpu: bool | None = None,
         monitor_gil_contention: bool | None = None,
     ):
@@ -125,7 +126,9 @@ class SystemMonitor:
         if not WINDOWS:
             self.quantities["num_fds"] = deque(maxlen=maxlen)
 
-        if nvml.device_get_count() > 0:
+        if monitor_gpu is None:
+            monitor_gpu = dask.config.get("distributed.admin.system-monitor.gpu")
+        if monitor_gpu and nvml.device_get_count() > 0:
             gpu_extra = nvml.one_time()
             self.gpu_name = gpu_extra["name"]
             self.gpu_memory_total = gpu_extra["memory-total"]

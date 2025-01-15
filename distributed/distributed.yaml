@@ -356,6 +356,7 @@ distributed:
       gil:
         enabled: true  # Monitor GIL contention
         interval: "1ms"  # Frequency to poll GIL
+      gpu: true  # Monitor GPU usage
     event-loop: tornado
   rmm:
     pool-size: null
