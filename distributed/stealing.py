@@ -60,6 +60,150 @@ _WORKER_STATE_UNDEFINED = {
 }
 
 
+class WorkStealingBalancer:
+    def __init__(self, scheduler: Scheduler, work_stealing: WorkStealing):
+        self.scheduler = scheduler
+        self.work_stealing = work_stealing
+
+        self._logs: list[tuple[Any, ...]] = []
+        self._start_time: float
+
+    @log_errors
+    def balance(self) -> None:
+        self._start_time = time()
+        return self._run()
+
+    def _run(self) -> None:
+        s = self.scheduler
+        i = 0
+        # Paused and closing workers must never become thieves
+        if not (potential_thieves := self.get_potential_thieves()) or not (
+            potential_victims := self.get_potential_victims(potential_thieves)
+        ):
+            return
+        assert potential_victims
+        assert potential_thieves
+        for level, _ in enumerate(self.work_stealing.cost_multipliers):
+            if not potential_thieves:
+                break
+            for victim in list(potential_victims):
+                stealable = self._get_stealable_tasks(victim, level)
+                if not stealable or not potential_thieves:
+                    continue
+
+                for ts in list(stealable):
+                    if not potential_thieves:
+                        break
+                    if (
+                        ts not in self.work_stealing.key_stealable
+                        or ts.processing_on is not victim
+                        or ts not in victim.processing
+                    ):
+                        # FIXME: Instead of discarding here, clean up stealable properly
+                        stealable.discard(ts)
+                        continue
+                    i += 1
+                    if not (thief := _get_thief(s, ts, potential_thieves)):
+                        continue
+
+                    self.try_steal_task(
+                        ts, thief, victim, level, potential_thieves, stealable
+                    )
+
+                s.check_idle_saturated(victim, occ=self._combined_occupancy(victim))
+
+        if self._logs:
+            self.work_stealing.log(("request", self._logs))
+            self.work_stealing.count += 1
+        stop = time()
+        if s.digests:
+            s.digests["steal-duration"].add(stop - self._start_time)
+
+    def _get_stealable_tasks(self, victim: WorkerState, level: int) -> set[TaskState]:
+        return self.work_stealing.stealable[victim.address][level]
+
+    def try_steal_task(
+        self,
+        ts: TaskState,
+        thief: WorkerState,
+        victim: WorkerState,
+        level: int,
+        potential_thieves: set[WorkerState],
+        stealable: set[TaskState],
+    ) -> None:
+        s = self.scheduler
+        occ_thief = self._combined_occupancy(thief)
+        occ_victim = self._combined_occupancy(victim)
+        comm_cost_thief = s.get_comm_cost(ts, thief)
+        comm_cost_victim = s.get_comm_cost(ts, victim)
+        compute = s.get_task_duration(ts)
+        if (
+            occ_thief + comm_cost_thief + compute
+            <= occ_victim - (comm_cost_victim + compute) / 2
+        ):
+            self.work_stealing.move_task_request(ts, victim, thief)
+            cost = compute + comm_cost_victim
+            self._logs.append(
+                (
+                    self._start_time,
+                    level,
+                    ts.key,
+                    cost,
+                    victim.address,
+                    occ_victim,
+                    thief.address,
+                    occ_thief,
+                )
+            )
+            self.work_stealing.metrics["request_count_total"][level] += 1
+            self.work_stealing.metrics["request_cost_total"][level] += cost
+            occ_thief = self._combined_occupancy(thief)
+            nproc_thief = self._combined_nprocessing(thief)
+            if not s.is_unoccupied(thief, occ_thief, nproc_thief):
+                potential_thieves.discard(thief)
+            # FIXME: move_task_request already implements some logic
+            # for removing ts from stealable. If we made sure to
+            # properly clean up, we would not need this
+            stealable.discard(ts)
+
+    def get_potential_thieves(self) -> set[WorkerState]:
+        s = self.scheduler
+        potential_thieves = set(s.idle.values())
+        if not potential_thieves or len(potential_thieves) == len(s.workers):
+            return set()
+        return potential_thieves
+
+    def get_potential_victims(
+        self, potential_thieves: set[WorkerState]
+    ) -> set[WorkerState]:
+        s = self.scheduler
+        potential_victims: set[WorkerState] | list[WorkerState] = s.saturated
+        if not potential_victims:
+            potential_victims = topk(
+                10, s.workers.values(), key=self._combined_occupancy
+            )
+            potential_victims = [
+                ws
+                for ws in potential_victims
+                if self._combined_occupancy(ws) > 0.2
+                and self._combined_nprocessing(ws) > ws.nthreads
+                and ws not in potential_thieves
+            ]
+            if not potential_victims:
+                return set()
+        if len(potential_victims) < 20:
+            potential_victims = sorted(
+                potential_victims, key=self._combined_occupancy, reverse=True
+            )
+        return set(potential_victims)
+
+    def _combined_occupancy(self, ws: WorkerState) -> float:
+        return ws.occupancy + self.work_stealing.in_flight_occupancy[ws]
+
+    def _combined_nprocessing(self, ws: WorkerState) -> int:
+        return len(ws.processing) + self.work_stealing.in_flight_tasks[ws]
+
+
 class InFlightInfo(TypedDict):
     victim: WorkerState
     thief: WorkerState
@@ -117,6 +261,8 @@ class WorkStealing(SchedulerPlugin):
         }
         self._request_counter = 0
         self.scheduler.stream_handlers["steal-response"] = self.move_task_confirm
+
+        self._balancer = WorkStealingBalancer
 
     async def start(self, scheduler: Any = None) -> None:
         """Start the background coroutine to balance the tasks on the cluster.
@@ -398,115 +544,8 @@ class WorkStealing(SchedulerPlugin):
             self.scheduler.check_idle_saturated(thief)
             self.scheduler.check_idle_saturated(victim)
 
-    @log_errors
-    def balance(self) -> None:
-        s = self.scheduler
-        log = []
-        start = time()
-
-        i = 0
-        # Paused and closing workers must never become thieves
-        potential_thieves = set(s.idle.values())
-        if not potential_thieves or len(potential_thieves) == len(s.workers):
-            return
-        victim: WorkerState | None
-        potential_victims: set[WorkerState] | list[WorkerState] = s.saturated
-        if not potential_victims:
-            potential_victims = topk(
-                10, s.workers.values(), key=self._combined_occupancy
-            )
-            potential_victims = [
-                ws
-                for ws in potential_victims
-                if self._combined_occupancy(ws) > 0.2
-                and self._combined_nprocessing(ws) > ws.nthreads
-                and ws not in potential_thieves
-            ]
-            if not potential_victims:
-                return
-        if len(potential_victims) < 20:
-            potential_victims = sorted(
-                potential_victims, key=self._combined_occupancy, reverse=True
-            )
-        assert potential_victims
-        assert potential_thieves
-        for level, _ in enumerate(self.cost_multipliers):
-            if not potential_thieves:
-                break
-            for victim in list(potential_victims):
-                stealable = self.stealable[victim.address][level]
-                if not stealable or not potential_thieves:
-                    continue
-
-                for ts in list(stealable):
-                    if not potential_thieves:
-                        break
-                    if (
-                        ts not in self.key_stealable
-                        or ts.processing_on is not victim
-                        or ts not in victim.processing
-                    ):
-                        # FIXME: Instead of discarding here, clean up stealable properly
-                        stealable.discard(ts)
-                        continue
-                    i += 1
-                    if not (thief := _get_thief(s, ts, potential_thieves)):
-                        continue
-
-                    occ_thief = self._combined_occupancy(thief)
-                    occ_victim = self._combined_occupancy(victim)
-                    comm_cost_thief = self.scheduler.get_comm_cost(ts, thief)
-                    comm_cost_victim = self.scheduler.get_comm_cost(ts, victim)
-                    compute = self.scheduler.get_task_duration(ts)
-
-                    if (
-                        occ_thief + comm_cost_thief + compute
-                        <= occ_victim - (comm_cost_victim + compute) / 2
-                    ):
-                        self.move_task_request(ts, victim, thief)
-                        cost = compute + comm_cost_victim
-                        log.append(
-                            (
-                                start,
-                                level,
-                                ts.key,
-                                cost,
-                                victim.address,
-                                occ_victim,
-                                thief.address,
-                                occ_thief,
-                            )
-                        )
-                        self.metrics["request_count_total"][level] += 1
-                        self.metrics["request_cost_total"][level] += cost
-
-                        occ_thief = self._combined_occupancy(thief)
-                        nproc_thief = self._combined_nprocessing(thief)
-
-                        if not self.scheduler.is_unoccupied(
-                            thief, occ_thief, nproc_thief
-                        ):
-                            potential_thieves.discard(thief)
-                        # FIXME: move_task_request already implements some logic
-                        # for removing ts from stealable. If we made sure to
-                        # properly clean up, we would not need this
-                        stealable.discard(ts)
-                self.scheduler.check_idle_saturated(
-                    victim, occ=self._combined_occupancy(victim)
-                )
-
-        if log:
-            self.log(("request", log))
-            self.count += 1
-        stop = time()
-        if s.digests:
-            s.digests["steal-duration"].add(stop - start)
-
-    def _combined_occupancy(self, ws: WorkerState) -> float:
-        return ws.occupancy + self.in_flight_occupancy[ws]
-
-    def _combined_nprocessing(self, ws: WorkerState) -> int:
-        return len(ws.processing) + self.in_flight_tasks[ws]
+    def balance(self):
+        self._balancer(self.scheduler, self).balance()
 
     def restart(self, scheduler: Any) -> None:
         for stealable in self.stealable.values():
